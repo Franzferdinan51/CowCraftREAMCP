@@ -39,6 +39,8 @@ from backend import WoWBackend, BackendError  # noqa: E402
 from cowcraft_mcp import (  # noqa: E402
     CowCraft,
     CowCraftError,
+    account_state_paths,
+    backup_connection_token,
     classify_failure,
     transport_backoff_seconds,
 )
@@ -57,14 +59,23 @@ def proxy_transport_delay(attempt):
     return transport_backoff_seconds(attempt)
 
 
+def default_client_factory(username):
+    """One upstream client per account, so accounts do not share a token file."""
+    root = os.environ.get("MINTA_COWCRAFT_STATE", "/tmp/cowcraft-accounts")
+    token_path, model_path = account_state_paths(root, username)
+    return CowCraft(url=UPSTREAM_URL, token_path=token_path, model_path=model_path)
+
+
 class _Session:
     """One upstream CowCraft session for one account."""
 
     def __init__(self, username, client_factory):
         self.username = username
-        self.game = client_factory()
+        self.game = client_factory(username)
         self.lock = threading.RLock()
         self.password = None
+        self.agent_label = None
+        self.login_body = None
         self.connected = False
         self.in_world = False
         self.last_use = 0.0
@@ -79,9 +90,7 @@ class CowCraftBackend(WoWBackend):
     """WoWBackend that proxies to the real CowCraft MCP server."""
 
     def __init__(self, client_factory=None):
-        self._client_factory = client_factory or (
-            lambda: CowCraft(url=UPSTREAM_URL)
-        )
+        self._client_factory = client_factory or default_client_factory
         self._sessions = {}
         self._guard = threading.Lock()
         self._log_lock = threading.Lock()
@@ -125,20 +134,27 @@ class CowCraftBackend(WoWBackend):
             raise BackendError("rate_limited",
                                "reconnect cooldown; try again shortly")
         s.last_reconnect = time.time()
-        # Drop a persisted prior lease. Never disconnect the token connect()
-        # is about to issue — that token does not hold the old account lease.
+        # Drop a persisted prior lease for this account only. Never disconnect
+        # the token connect() is about to issue, and never another account's.
         try:
-            s.game.release_saved_lease()
-            s.game.connect(f"minta-proxy-{s.username}")
+            s.game.release_saved_lease(account=s.username)
+            if s.game.unreleased_saved_token(s.username):
+                backup_connection_token(s.game.token_path)
+                raise BackendError(
+                    "upstream_error", "saved lease was not released")
+            s.game.connect(s.agent_label or s.username)
             if not s.password:
                 raise BackendError("not_authenticated",
                                    "login required before upstream use")
-            s.game.login(s.username, s.password)
+            s.login_body = s.game.login(s.username, s.password)
+        except BackendError:
+            raise
         except CowCraftError as exc:
             s.errors += 1
             s.last_error = str(exc)[:200]
-            if classify_failure(exc.code) == "account_busy":
-                raise BackendError("account_busy", str(exc)[:200])
+            kind = classify_failure(exc.code)
+            if kind in ("account_busy", "rate_limited"):
+                raise BackendError(kind, str(exc)[:200])
             raise BackendError("upstream_error", str(exc)[:200])
         s.connected = True
         s.last_use = time.time()
@@ -172,10 +188,11 @@ class CowCraftBackend(WoWBackend):
                     s.last_error = msg[:200]
                     self._log(s.username, op, False, msg)
                     kind = classify_failure(exc.code)
-                    if kind == "account_busy":
-                        raise BackendError("account_busy", msg[:200])
+                    if kind in ("account_busy", "rate_limited", "benchmark_selection_rejected"):
+                        raise BackendError(kind, msg[:200])
                     if kind == "transport" and attempt == 0:
-                        s.connected = False
+                        # Retry the same call. A new login would burn the
+                        # 60s window and could drop a lease the server still holds.
                         last_exc = exc
                         continue
                     raise BackendError("upstream_error", msg[:200])
@@ -192,7 +209,7 @@ class CowCraftBackend(WoWBackend):
                 if e.code != "not_authenticated":
                     raise
                 # register needs no prior login: use a bare client
-                game = self._client_factory()
+                game = self._client_factory(username)
                 try:
                     game.connect(f"minta-proxy-reg-{username}")
                     out = self._call_raw(game, "register",
@@ -209,14 +226,18 @@ class CowCraftBackend(WoWBackend):
         except CowCraftError as exc:
             raise BackendError("upstream_error", str(exc)[:200])
 
-    def login(self, username, password):
+    def login(self, username, password, agent_label=None):
+        """Sign in as the caller. agent_label is sent unchanged on connect."""
         s = self._session(username)
         s.password = password  # held in memory only, for reconnects
+        if isinstance(agent_label, str) and agent_label != "":
+            s.agent_label = agent_label
+        elif not s.agent_label:
+            s.agent_label = username
         with s.lock:
             s.connected = False  # force a fresh upstream login
             self._ensure_connected(s)
-            out = self._call(s, "login", lambda: {"username": username})
-            return out
+            return s.login_body
 
     def list_characters(self, username):
         s = self._session(username)
@@ -264,9 +285,17 @@ class CowCraftBackend(WoWBackend):
                 s.password = None
         return {"left": True}
 
-    def observe(self, username, sections=None):
+    def observe(self, username, sections=None, spell_limit=None, spell_offset=None):
         s = self._session(username)
-        return self._call(s, "observe", s.game.observe)
+        if sections is None and spell_limit is None and spell_offset is None:
+            return self._call(s, "observe", s.game.observe)
+        return self._call(
+            s, "observe",
+            lambda: s.game.observe(
+                sections=sections,
+                spell_limit=spell_limit,
+                spell_offset=spell_offset,
+            ))
 
     def do_action(self, username, action):
         s = self._session(username)

@@ -9,11 +9,12 @@ TOOLS = [
     {
         "name": "connect",
         "description": (
+            "Step 1 of connect, login, characters, select_character, observe. "
             "Create a game connection lease. No authentication required. "
-            "Returns a connection token, lease info, transport type, the "
-            "list of game action capabilities, and usage instructions. "
-            "Honor retry_after_ms; never busy-loop. Lease clock starts on "
-            "first result."
+            "model_name is the caller's stable agent label, reused for every "
+            "later entry of that character. Returns a connection token, lease "
+            "info, capabilities, and the connection instructions. "
+            "Honor retry_after_ms; never busy-loop."
         ),
         "inputSchema": {
             "type": "object",
@@ -47,10 +48,11 @@ TOOLS = [
     {
         "name": "login",
         "description": (
-            "Sign in to an existing account. Binds the connection lease to "
-            "the account (one lease per account; a second login fails with "
-            "account_busy). Honor retry_after_ms on rate_limited; never "
-            "busy-loop."
+            "Step 2. Sign in as the caller. Any username and password are sent "
+            "as given. One lease per account, and at most one login per 60 "
+            "seconds. account_busy is not rate_limited: disconnect the saved "
+            "lease, wait, and try once. On rate_limited, wait for "
+            "retry_after_ms. Never busy-loop."
         ),
         "inputSchema": {
             "type": "object",

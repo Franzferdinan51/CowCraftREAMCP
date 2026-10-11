@@ -53,11 +53,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "systemone-inte
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp-gateway"))
 
 from cowcraft_env import CowCraftEnv  # noqa: E402
-from auto_model_judge import AutoModelJudge  # noqa: E402
+from auto_model_judge import AutoModelJudge, bounded_world_summary  # noqa: E402
+from cowcraft_mcp import account_state_paths  # noqa: E402
 
 VALID_ACTIONS = [
     "move_north", "move_south", "move_east", "move_west",
-    "attack", "stop", "interact", "loot", "wait",
+    "attack", "cast", "stop", "interact", "loot", "wait",
 ]
 
 _stop = threading.Event()
@@ -148,15 +149,10 @@ def run_bot(cfg):
                          args=(cfg["health_port"],), daemon=True).start()
 
     judge = AutoModelJudge()
-    system_prompt = cfg.get("system_prompt") or (
-        f"You are {cfg['name']}, a {cfg.get('role', 'adventurer')} in vanilla "
-        "World of Warcraft. Each tick you see the world as text and pick ONE "
-        "action. Prefer fighting hostiles near your level, looting corpses, "
-        "and interacting with objects. Retreat when below 35% health. "
-        "Never repeat a failing action more than twice."
-    )
 
     def make_env():
+        root = os.environ.get("MINTA_COWCRAFT_STATE", "/tmp/cowcraft-accounts")
+        token_path, model_path = account_state_paths(root, cfg["username"])
         return CowCraftEnv(
             gateway_url=cfg.get("gateway_url", "http://127.0.0.1:8901/mcp"),
             username=cfg["username"],
@@ -164,7 +160,9 @@ def run_bot(cfg):
             character_name=cfg["name"],
             char_class=cfg.get("char_class", 1),
             role=cfg.get("role", "adventurer"),
-            model_name=f"bot-{cfg['name']}",
+            model_name=cfg.get("model_name") or ("bot-" + cfg["name"]),
+            token_path=token_path,
+            model_path=model_path,
         )
 
     env = connect_with_backoff(cfg, logger, make_env)
@@ -185,10 +183,8 @@ def run_bot(cfg):
             break
         try:
             obs = env.observe()
-            state = (f"{system_prompt}\n\nMemory:\n"
-                     + ("\n".join(memory[-6:]) if memory else "(none)")
-                     + f"\n\nTick {tick}:\n{obs.text}")
-            answers = judge(state, [{"id": "action"}])
+            summary = bounded_world_summary(getattr(obs, "info", {}) or {})
+            answers = judge(summary, [{"id": "action"}])
             action = answers.get("action", {}).get("choice", "wait")
             conf = answers.get("action", {}).get("confidence", 0.0)
             if conf < 0.35 or action not in VALID_ACTIONS:

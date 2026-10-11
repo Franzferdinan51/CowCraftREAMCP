@@ -18,6 +18,7 @@ Env vars:
 
 import json
 import os
+import re
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -29,8 +30,62 @@ MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "4"))
 
 VALID_ACTIONS = [
     "move_north", "move_south", "move_east", "move_west",
-    "attack", "stop", "interact", "loot", "wait",
+    "attack", "cast", "stop", "interact", "loot", "wait",
 ]
+
+
+def choose_action(loaded_models, reply, valid_actions=None, load_log=None):
+    """Pick one already-loaded action, or wait.
+
+    An empty model list or a reply that is not a known action yields wait.
+    This never loads a model and never raises.
+    """
+    log = load_log if isinstance(load_log, list) else []
+    try:
+        actions = list(VALID_ACTIONS if valid_actions is None else valid_actions)
+    except TypeError:
+        return "wait", log
+    if not loaded_models:
+        return "wait", log
+    text = "" if reply is None else str(reply).strip().lower()
+    words = re.findall(r"[a-z0-9_]+", text)
+    for action in actions:
+        if not isinstance(action, str):
+            continue
+        name = action.strip().lower()
+        if name and (text == name or name in words):
+            return name, log
+    return "wait", log
+
+
+def bounded_world_summary(state, limit=600):
+    """Short self / hostile / money text. Quests and objects are left out."""
+    state = state if isinstance(state, dict) else {}
+    me = state.get("self") if isinstance(state.get("self"), dict) else {}
+    name = me.get("name", "")
+    hp = me.get("hp", me.get("health", ""))
+    money = me.get("money", state.get("money", ""))
+    parts = ["self name=%s hp=%s money=%s" % (name, hp, money)]
+    hostiles = []
+    units = state.get("nearby_units") or []
+    if isinstance(units, list):
+        for unit in units:
+            if not isinstance(unit, dict) or unit.get("dead"):
+                continue
+            if unit.get("hostile") is True or unit.get("faction") == 32:
+                hostiles.append(str(unit.get("name") or "hostile"))
+    if hostiles:
+        parts.append("hostiles " + ", ".join(hostiles))
+    text = "; ".join(parts)
+    try:
+        cap = int(limit)
+    except (TypeError, ValueError):
+        cap = 600
+    if cap < 1:
+        cap = 1
+    if len(text) > cap:
+        text = text[:cap]
+    return text
 
 _cached_model = None
 _model_lock = threading.Lock()
@@ -129,9 +184,10 @@ def decide(state_text, system_prompt=None, max_tokens=20):
         ], timeout=60)
         data = json.loads(out)
         raw = data["choices"][0]["message"]["content"].strip().lower()
-        for action in VALID_ACTIONS:
-            if action in raw:
-                return action, 0.8, model
+        action, _log = choose_action([model], raw)
+        words = re.findall(r"[a-z0-9_]+", raw)
+        if action in words or raw.strip() == action:
+            return action, 0.8, model
         return "wait", 0.3, model
     except Exception:
         return "wait", 0.0, model

@@ -111,6 +111,8 @@ def classify_failure(code=None, exc=None):
         return "rate_limited"
     if code == "benchmark_selection_rejected":
         return "benchmark_selection_rejected"
+    if code == "transport":
+        return "transport"
     if isinstance(exc, (IncompleteRead, RemoteDisconnected)):
         return "transport"
     reason = getattr(exc, "reason", None)
@@ -123,17 +125,33 @@ def is_retryable_transport(exc):
     return classify_failure(exc=exc) == "transport"
 
 
-def token_to_disconnect_on_busy(saved_token, current_token):
-    """Token that may hold a prior lease.
+def token_to_disconnect_on_busy(saved_token, current_token, saved_owner=None, account=None):
+    """Token that may hold a prior lease for this account.
 
     A newly issued token is never a substitute for the saved one, so the
-    current connection is not returned.
+    current connection is not returned. A token owned by a different account
+    is left where it is.
     """
     if not saved_token:
         return None
     if current_token and saved_token == current_token:
         return None
+    if saved_owner and account and saved_owner != account:
+        return None
     return saved_token
+
+
+def account_state_paths(root, username):
+    """Connection and model files for one account. Accounts do not share a file."""
+    raw = str(username or "").strip().lower()
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in raw).strip("_")
+    if not safe:
+        safe = "account"
+    folder = os.path.join(os.fspath(root), safe)
+    return (
+        os.path.join(folder, "connection.txt"),
+        os.path.join(folder, "model.txt"),
+    )
 
 
 def require_int_guid(guid):
@@ -188,13 +206,73 @@ _TOKEN_ALREADY_GONE = frozenset({"invalid_connection", "lease_expired"})
 
 
 def clear_connection_token(path, token):
-    """Remove the file only when it still holds this token."""
+    """Remove the file only when it still holds this token.
+
+    The token is copied aside first so a later process can still release it.
+    """
     if not token or load_connection_token(path) != token:
         return
+    backup_connection_token(path)
     try:
         os.remove(path)
     except FileNotFoundError:
         pass
+    try:
+        os.remove(os.fspath(path) + ".owner")
+    except FileNotFoundError:
+        pass
+
+
+def load_connection_owner(path):
+    """Username that owns the saved token, or None when the sidecar is absent."""
+    try:
+        with open(os.fspath(path) + ".owner", encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return None
+    line = text.splitlines()[0].strip() if text.strip() else ""
+    return line or None
+
+
+def save_connection_owner(path, username):
+    """Record which account owns the token file. The token file stays token-only."""
+    if not isinstance(username, str) or not username.strip():
+        raise CowCraftError("username is required", code="invalid_arguments")
+    _atomic_write(os.fspath(path) + ".owner", username.strip() + "\n")
+
+
+def backup_connection_token(path):
+    """Copy the saved token to path.bak. Does not write a password.
+
+    A backup that already holds a different token is left alone.
+    """
+    token = load_connection_token(path)
+    if not token:
+        return None
+    bak = os.fspath(path) + ".bak"
+    existing = load_connection_token(bak)
+    if existing and existing != token:
+        return bak
+    _atomic_write(bak, token + "\n")
+    return bak
+
+
+def remember_connection_token(path, token, account=None):
+    """Save this token. Copy a different saved token aside before replacing it.
+
+    Returns False when the file holds another account's token. That file is
+    not changed.
+    """
+    current = load_connection_token(path)
+    owner = load_connection_owner(path)
+    if current and current != token and owner and account and owner != account:
+        return False
+    if current and current != token:
+        backup_connection_token(path)
+    save_connection_token(path, token)
+    if account:
+        save_connection_owner(path, account)
+    return True
 
 
 def save_model_name(path, model_name):
@@ -223,13 +301,14 @@ class CowCraft:
         self.model_path = model_path or DEFAULT_MODEL_PATH
         self.connection = None
         self.model_name = None
+        self.instructions = ""
         self._transport = transport or self._default_transport
         self._clock = clock or time.monotonic
         self._sleep = sleep or time.sleep
         self._msg_id = 0
         self._last_login_at = None
         self._next_observe_at = 0.0
-        self._benchmark_rejected = False
+        self._benchmark_rejected = set()
         self._sent = []
         self._rpc_lock = threading.RLock()
 
@@ -393,6 +472,7 @@ class CowCraft:
         result = self._tool("connect", {"model_name": model_name})
         self.connection = result["connection"]
         self.model_name = model_name
+        self.instructions = result.get("instructions") or ""
         save_model_name(self.model_path, model_name)
         if not load_connection_token(self.token_path):
             save_connection_token(self.token_path, self.connection)
@@ -436,14 +516,15 @@ class CowCraft:
                 })
             except CowCraftError as exc:
                 if classify_failure(exc.code) == "account_busy":
-                    self.release_saved_lease()
+                    self.release_saved_lease(account=username)
                     self._sleep(account_busy_wait_seconds())
                     raise
                 self._last_login_at = self._clock()
                 raise
             self._last_login_at = self._clock()
             if self.connection:
-                save_connection_token(self.token_path, self.connection)
+                remember_connection_token(
+                    self.token_path, self.connection, account=username)
             return result
 
     def characters(self):
@@ -489,7 +570,7 @@ class CowCraft:
         """
         self._need_conn()
         guid = require_int_guid(guid)
-        if self._benchmark_rejected:
+        if guid in self._benchmark_rejected:
             raise CowCraftError(
                 "select_character: benchmark_selection_rejected: not retrying",
                 code="benchmark_selection_rejected",
@@ -501,12 +582,19 @@ class CowCraft:
             })
         except CowCraftError as exc:
             if classify_failure(exc.code) == "benchmark_selection_rejected":
-                self._benchmark_rejected = True
+                self._benchmark_rejected.add(guid)
             raise
 
-    def observe(self):
+    def observe(self, sections=None, spell_limit=None, spell_offset=None):
         self._need_conn()
-        return self._tool("observe", {"connection": self.connection})
+        args = {"connection": self.connection}
+        if sections:
+            args["sections"] = list(sections)
+        if spell_limit is not None:
+            args["spell_limit"] = int(spell_limit)
+        if spell_offset is not None:
+            args["spell_offset"] = int(spell_offset)
+        return self._tool("observe", args)
 
     def heartbeat(self):
         self._need_conn()
@@ -557,15 +645,18 @@ class CowCraft:
         clear_connection_token(self.token_path, token)
         return result
 
-    def release_saved_lease(self):
+    def release_saved_lease(self, account=None):
         """Disconnect the persisted token when it is not the current one.
 
         Returns the token only after the file no longer holds it. A transport
-        failure leaves the file alone and returns None.
+        failure leaves the file alone and returns None. A token owned by a
+        different account is not disconnected.
         """
         target = token_to_disconnect_on_busy(
             load_connection_token(self.token_path),
             self.connection,
+            saved_owner=load_connection_owner(self.token_path),
+            account=account,
         )
         if not target:
             return None
@@ -573,6 +664,19 @@ class CowCraft:
         if load_connection_token(self.token_path) == target:
             return None
         return target
+
+    def unreleased_saved_token(self, account=None):
+        """Saved token this account still has to release, or None.
+
+        Another account's token is not this account's to release.
+        """
+        saved = load_connection_token(self.token_path)
+        if not saved or saved == self.connection:
+            return None
+        owner = load_connection_owner(self.token_path)
+        if owner and account and owner != account:
+            return None
+        return saved
 
     def self_state(self):
         state = self.observe()

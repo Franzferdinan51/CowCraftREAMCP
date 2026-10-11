@@ -30,8 +30,8 @@ class WoWBackend:
     def register(self, username, password):
         raise NotImplementedError
 
-    def login(self, username, password):
-        """Returns account dict. Must enforce agent-bind rules."""
+    def login(self, username, password, agent_label=None):
+        """Returns account dict. agent_label is the caller's connect label."""
         raise NotImplementedError
 
     def list_characters(self, username):
@@ -51,7 +51,7 @@ class WoWBackend:
     def leave_world(self, username):
         raise NotImplementedError
 
-    def observe(self, username, sections=None):
+    def observe(self, username, sections=None, spell_limit=None, spell_offset=None):
         """Return bounded world-state snapshot dict."""
         raise NotImplementedError
 
@@ -104,7 +104,7 @@ class StubBackend(WoWBackend):
                               "characters": [], "agent_bound": False}
         return {"username": username}
 
-    def login(self, username, password):
+    def login(self, username, password, agent_label=None):
         acct = self._check_pw(username, password)
         return {"username": acct["username"],
                 "characters": len(acct["characters"])}
@@ -168,7 +168,7 @@ class StubBackend(WoWBackend):
         self.sessions.pop(username.lower(), None)
         return {}
 
-    def observe(self, username, sections=None):
+    def observe(self, username, sections=None, spell_limit=None, spell_offset=None):
         sess = self.sessions.get(username.lower())
         if sess is None:
             raise BackendError("not_in_world", "no character in world")

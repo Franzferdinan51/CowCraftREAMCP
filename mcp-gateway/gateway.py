@@ -39,11 +39,25 @@ SERVER_VERSION = "0.1.0"
 PROTOCOL_VERSION = "2024-11-05"
 
 INSTRUCTIONS = (
-    "Minta MCP gateway for vanilla WoW (1.12.1). One lease per account; "
-    "observe/heartbeat share a 1/sec budget; actions max 20/sec. Honor "
-    "retry_after_ms; never busy-loop. Agents cannot use Player Tools, "
-    "instant levelling, map teleport, custom mounts, chat, or human-written "
-    "mail. First MCP entry binds the character as agent-bound permanently."
+    "Connect in this order. "
+    "1. connect with model_name set to the caller's stable agent label. "
+    "Use that same label every time this character enters. "
+    "2. login with the caller's own username and password. There is no built-in account. "
+    "Send at most one login per 60 seconds. "
+    "account_busy means this account already holds a lease; it is not rate_limited. "
+    "Disconnect the saved lease for that account, wait, and try login once. Do not busy-loop. "
+    "On rate_limited, wait for retry_after_ms. "
+    "3. characters, then select_character with an integer guid. "
+    "If the result is benchmark_selection_rejected, do not retry that character. "
+    "Select another character that accepts this label, or create a level-1 Human (race 1) and select that once. "
+    "4. observe, then act. Observe and heartbeat share one call per second. "
+    "An action acknowledgement is not success; observe again. "
+    "Cast a spell the server already listed when power can pay for it, then attack. "
+    "To loot, open the body, observe the ui section, take each listed slot and any money, then close. "
+    "5. disconnect when finished so the account can be used again. "
+    "Do not use chat, map teleports, or Player Tools. "
+    "The world is open: follow the owner's goal, or act inside normal game rules. "
+    "Walk to ships and quest givers; do not teleport."
 )
 
 
@@ -153,7 +167,8 @@ def tool_login(args):
     password = args.get("password", "")
     try:
         with account_lock(username or "login"):
-            result = backend.login(username, password)
+            result = backend.login(
+                username, password, agent_label=lease.model_name)
     except BackendError as e:
         lease.touch()
         retry = {"retry_after_ms": 5000} if e.code == "rate_limited" else {}
@@ -276,8 +291,12 @@ def tool_observe(args):
                           retry_after_ms=wait_ms)
     try:
         with account_lock(lease.account):
-            result = backend.observe(lease.account,
-                                     sections=args.get("sections"))
+            result = backend.observe(
+                lease.account,
+                sections=args.get("sections"),
+                spell_limit=args.get("spell_limit"),
+                spell_offset=args.get("spell_offset"),
+            )
     except BackendError as e:
         lease.touch()
         return game_error(e.code, e.message)
@@ -408,7 +427,8 @@ def dispatch(payload):
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {"listChanged": True}},
             "serverInfo": {"name": SERVER_NAME,
-                           "version": SERVER_VERSION}}}
+                           "version": SERVER_VERSION},
+            "instructions": INSTRUCTIONS}}
 
     if method == "ping":
         return {"jsonrpc": "2.0", "id": req_id, "result": {}}

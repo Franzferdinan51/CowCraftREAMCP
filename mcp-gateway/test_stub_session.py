@@ -55,6 +55,9 @@ class StubSessionTest(unittest.TestCase):
 
         init = client.initialize()
         self.assertIn("protocolVersion", init)
+        self.assertIn("account_busy", init.get("instructions", ""))
+        self.assertIn("benchmark_selection_rejected", init["instructions"])
+        self.assertIn("Human", init["instructions"])
         print("SESSION initialize ok")
 
         listed = client.list_tools()
@@ -78,6 +81,8 @@ class StubSessionTest(unittest.TestCase):
             connect_calls[-1]["params"]["arguments"]["model_name"],
             label,
         )
+        self.assertIn("login", client.instructions)
+        self.assertIn("disconnect", client.instructions)
         print("SESSION connect token matches the lease pattern")
 
         client.register("sessionuser", secret)

@@ -2,10 +2,11 @@
 
 ## `account_busy` on login
 
-Another session (maybe a dead one) holds the account. The gateway reaps
-idle leases after 5 minutes. Wait 10s and retry once. If it persists,
-the upstream CowCraft server may be holding a ghost lease — `disconnect`
-with the old connection token to release it.
+Another session holds the account. This is not a rate limit. Disconnect
+the saved lease for this account, wait, and try login once. Do not
+busy-loop login. A `benchmark_selection_rejected` character is bound to
+a different agent label; do not retry it. Pass the original `model_name`,
+or enter a different character.
 
 ## `Remote end closed connection` / `IncompleteRead`
 

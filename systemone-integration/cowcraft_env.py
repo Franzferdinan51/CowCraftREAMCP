@@ -39,6 +39,7 @@ ACTIONS = [
     "move_east",
     "move_west",
     "attack",
+    "cast",
     "stop",
     "interact",
     "loot",
@@ -46,6 +47,95 @@ ACTIONS = [
 ]
 
 STEP_SIZE = 6.0  # world units per move_* action
+LOOT_SECTIONS = ("self", "nearby_units", "ui")
+
+
+def learned_spells(state):
+    """Spell dicts the server already says this character knows."""
+    if not isinstance(state, dict):
+        return []
+    found = []
+    for key in ("spells", "spellbook", "spell_book"):
+        raw = state.get(key)
+        if isinstance(raw, list):
+            found.extend(raw)
+        elif isinstance(raw, dict):
+            for inner in ("spells", "known", "entries"):
+                if isinstance(raw.get(inner), list):
+                    found.extend(raw[inner])
+    return [spell for spell in found if isinstance(spell, dict)]
+
+
+def spell_to_cast(spells, power):
+    """Pick a learned spell this power can pay for. Does not invent spell ids."""
+    try:
+        available = int(power)
+    except (TypeError, ValueError):
+        available = 0
+    fallback = None
+    for spell in spells or []:
+        if not isinstance(spell, dict):
+            continue
+        sid = spell.get("spell_id", spell.get("id"))
+        if isinstance(sid, bool) or not isinstance(sid, int):
+            continue
+        cost = spell.get("power_cost", spell.get("cost", spell.get("rage_cost", 0)))
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            cost = 0
+        if available < cost:
+            continue
+        name = str(spell.get("name") or "").lower()
+        auto = name in ("attack", "shoot")
+        harmful = bool(spell.get("harmful")) or any(
+            word in name for word in (
+                "strike", "shot", "bolt", "fire", "frost", "shadow",
+                "smite", "lightning", "wrath", "rend",
+            )
+        )
+        if harmful and not auto:
+            return sid
+        if fallback is None:
+            fallback = sid
+    return fallback
+
+
+def loot_plan(loot):
+    """Slots to take, and whether the window has money. Empty when there is no window."""
+    if not isinstance(loot, dict):
+        return [], False
+    slots = []
+    for item in loot.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        slot = item.get("slot")
+        if isinstance(slot, bool) or not isinstance(slot, int):
+            continue
+        slots.append(slot)
+    money = loot.get("gold", loot.get("money", 0))
+    has_money = isinstance(money, int) and not isinstance(money, bool) and money > 0
+    if isinstance(money, dict):
+        has_money = any(as_int_money(money.get(key)) > 0 for key in ("gold", "silver", "copper"))
+    return slots, has_money
+
+
+def as_int_money(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+def loot_window(state):
+    """Loot dict from an observe, including a ui section. Empty when closed."""
+    if not isinstance(state, dict):
+        return {}
+    for key in ("ordinary_ui", "ui", "combat_ui"):
+        block = state.get(key)
+        if isinstance(block, dict) and isinstance(block.get("loot"), dict):
+            return block["loot"]
+    loot = state.get("loot")
+    if isinstance(loot, dict):
+        return loot
+    return {}
 
 
 class Observation:
@@ -88,6 +178,8 @@ class CowCraftEnv:
         char_class=1,
         role="adventurer",
         model_name="minta-agent",
+        token_path=None,
+        model_path=None,
     ):
         if CowCraft is None:
             raise RuntimeError("cowcraft_mcp client not importable")
@@ -106,29 +198,75 @@ class CowCraftEnv:
         self.role = role
         self.model_name = model_name
 
-        self.game = CowCraft(url=self.gateway_url)
+        self.game = CowCraft(
+            url=self.gateway_url,
+            token_path=token_path,
+            model_path=model_path,
+        )
         self.state = {}
+        self.spells = []
         self._pos = (0.0, 0.0, 0.0)
         self._hp = (1, 1)
         self._last_heartbeat = 0.0
 
     # -- lifecycle -------------------------------------------------------
     def connect(self):
-        """Connect, login, select (or create) the character."""
+        """connect, login once, then enter a character that accepts this label.
+
+        account_busy is tried once more after the client releases a saved
+        lease. A benchmark_selection_rejected character is not selected again.
+        A missing character is created as a level-1 Human.
+        """
         self.game.connect(self.model_name)
-        self.game.login(self.username, self.password)
-        chars = self.game.characters().get("characters", [])
-        guid = None
-        for c in chars:
-            if c.get("name", "").lower() == self.character_name.lower():
-                guid = c.get("guid")
-                break
-        if guid is None:
-            created = self.game.create_character(self.character_name, self.char_class)
-            guid = created.get("guid") or created.get("character", {}).get("guid")
+        self._login_with_one_busy_retry()
+        chars = self.game.characters().get("characters") or []
+        if self._enter_existing(chars):
+            self._refresh()
+            self._load_spells()
+            return True
+        created = self.game.create_character(self._creation_name(chars), self.char_class)
+        guid = created.get("guid") or (created.get("character") or {}).get("guid")
         self.game.select_character(int(guid))
         self._refresh()
+        self._load_spells()
         return True
+
+    def _login_with_one_busy_retry(self):
+        try:
+            self.game.login(self.username, self.password)
+        except CowCraftError as exc:
+            if getattr(exc, "code", None) != "account_busy":
+                raise
+            self.game.login(self.username, self.password)
+
+    def _creation_name(self, chars):
+        names = {str(entry.get("name", "")).lower() for entry in chars}
+        if self.character_name.lower() not in names:
+            return self.character_name
+        letters = "".join(ch for ch in self.character_name if ch.isalpha())
+        return ((letters[:8] or "Human") + "Two")[:12]
+
+    def _enter_existing(self, chars):
+        named = []
+        rest = []
+        wanted = self.character_name.lower()
+        for entry in chars:
+            guid = entry.get("guid")
+            if isinstance(guid, bool) or not isinstance(guid, int):
+                continue
+            if str(entry.get("name", "")).lower() == wanted:
+                named.append(guid)
+            else:
+                rest.append(guid)
+        for guid in named + rest:
+            try:
+                self.game.select_character(guid)
+                return True
+            except CowCraftError as exc:
+                if getattr(exc, "code", None) == "benchmark_selection_rejected":
+                    continue
+                raise
+        return False
 
     def close(self):
         try:
@@ -154,7 +292,7 @@ class CowCraftEnv:
         time.sleep(0.6)  # let the world tick; gateway caps observe at 1/s
         self._refresh()
         moved = math.dist(self._pos[:2], before[:2])
-        progressed = moved > 0.5 or action in ("attack", "interact", "loot", "stop")
+        progressed = moved > 0.5 or action in ("attack", "cast", "interact", "loot", "stop")
         return ActResult(progressed=progressed, info={"action": action, "moved": round(moved, 2)})
 
     # -- internals -------------------------------------------------------
@@ -177,21 +315,66 @@ class CowCraftEnv:
             self._hp = (me.get("health", 1), me.get("max_health", 1))
 
     def _me(self):
-        for u in self.state.get("nearby_units", []):
-            if u.get("name", "").lower() == self.character_name.lower():
-                return u
-        # fall back to first self-like entry
+        me = self.state.get("self")
+        if isinstance(me, dict) and me.get("x") is not None:
+            return me
+        for unit in self.state.get("nearby_units", []):
+            if unit.get("name", "").lower() == self.character_name.lower():
+                return unit
         units = self.state.get("nearby_units", [])
         return units[0] if units else None
 
+    def _digit_guid(self, unit):
+        guid = str((unit or {}).get("guid") or "")
+        if guid.isdigit() and len(guid) <= 20:
+            return guid
+        return None
+
+    def _is_hostile(self, unit):
+        if not isinstance(unit, dict) or unit.get("dead"):
+            return False
+        if unit.get("hostile") is True or unit.get("faction") == 32:
+            return self._digit_guid(unit) is not None
+        return False
+
     def _nearest_hostile(self):
         best, best_d = None, float("inf")
-        for u in self.state.get("nearby_units", []):
-            if u.get("hostile") and not u.get("dead"):
-                d = math.dist((u.get("x", 0), u.get("y", 0)), self._pos[:2])
-                if d < best_d:
-                    best, best_d = u, d
+        for unit in self.state.get("nearby_units", []):
+            if not self._is_hostile(unit):
+                continue
+            dist = math.dist((unit.get("x", 0), unit.get("y", 0)), self._pos[:2])
+            if dist < best_d:
+                best, best_d = unit, dist
         return best
+
+    def _nearest_corpse(self):
+        best, best_d = None, float("inf")
+        for unit in self.state.get("nearby_units", []):
+            if not isinstance(unit, dict) or not unit.get("dead"):
+                continue
+            if not (unit.get("hostile") is True or unit.get("faction") == 32):
+                continue
+            if self._digit_guid(unit) is None:
+                continue
+            dist = math.dist((unit.get("x", 0), unit.get("y", 0)), self._pos[:2])
+            if dist < best_d:
+                best, best_d = unit, dist
+        return best
+
+    def _power(self):
+        me = self._me() or {}
+        power = me.get("power", me.get("rage", 0))
+        if isinstance(power, bool) or not isinstance(power, (int, float)):
+            return 0
+        return int(power)
+
+    def _load_spells(self):
+        try:
+            extra = self.game.observe(spell_limit=40) or {}
+        except Exception:
+            return
+        if isinstance(extra, dict):
+            self.spells = learned_spells(extra) or learned_spells(self.state)
 
     def _nearest_interactable(self):
         best, best_d = None, float("inf")
@@ -211,33 +394,44 @@ class CowCraftEnv:
             self.game.action("move", {"x": x + STEP_SIZE, "y": y, "z": z})
         elif action == "move_west":
             self.game.action("move", {"x": x - STEP_SIZE, "y": y, "z": z})
-        elif action == "attack":
+        elif action in ("attack", "cast"):
             target = self._nearest_hostile()
-            if target:
-                self.game.action("target", {"guid": target["guid"]})
-                self.game.action("attack", {})
+            guid = self._digit_guid(target)
+            if guid:
+                self.game.action("target", {"guid": guid})
+                spell_id = spell_to_cast(self.spells or learned_spells(self.state), self._power())
+                if spell_id is not None:
+                    self.game.action("cast", {"spell_id": spell_id, "target_guid": guid})
+                self.game.action("attack", {"guid": guid})
         elif action == "stop":
-            self.game.action("stop", {})
+            self.game.action("attack_stop")
         elif action == "interact":
             obj = self._nearest_interactable()
             if obj:
                 self.game.action("interact_object", {"guid": obj["guid"]})
         elif action == "loot":
-            # loot nearest corpse: open, take all, take money, close
-            target = self._nearest_hostile()
-            guid = target["guid"] if target and target.get("dead") else None
+            target = self._nearest_corpse()
+            guid = self._digit_guid(target)
             if guid:
                 self.game.action("loot_open", {"guid": guid})
-                for slot in range(16):
-                    try:
-                        self.game.action("loot_take", {"slot": slot})
-                    except Exception:
-                        break
                 try:
-                    self.game.action("loot_money", {})
+                    extra = self.game.observe(sections=list(LOOT_SECTIONS)) or {}
                 except Exception:
-                    pass
-                self.game.action("loot_close", {})
+                    extra = {}
+                if isinstance(extra, dict) and extra:
+                    self.state = extra
+                    me = self._me()
+                    if me:
+                        self._pos = (
+                            me.get("x", 0.0), me.get("y", 0.0), me.get("z", 0.0))
+                        self._hp = (me.get("health", 1), me.get("max_health", 1))
+                loot = loot_window(self.state)
+                slots, has_money = loot_plan(loot)
+                if has_money:
+                    self.game.action("loot_money", {})
+                for slot in slots:
+                    self.game.action("loot_take", {"slot": slot})
+                self.game.action("loot_close", {"guid": guid})
         elif action == "wait":
             time.sleep(1.0)
         else:
