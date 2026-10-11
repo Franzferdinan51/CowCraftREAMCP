@@ -5,6 +5,7 @@ login gate does not sleep. Three simulated failure iterations must pass,
 and three failures before a later success stop.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -162,6 +163,25 @@ class TransportPolicyTest(unittest.TestCase):
         self.assertGreater(clock.sleeps[0], transport_backoff_seconds(0))
         self.assertEqual(len(harness.named(transport.payloads, "login")), 1)
         print("TRANSPORT rate_limited waited %ss" % clock.sleeps[0])
+
+    def test_structured_content_is_the_tool_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client, transport, _clock = self._client(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"structuredContent": {"connection": "issued-token"}},
+                    }),
+                ],
+                token_path=os.path.join(tmp, "conn.txt"),
+                model_path=os.path.join(tmp, "model.txt"),
+            )
+            token = client.connect("DuckBot")
+            self.assertEqual(token, "issued-token")
+            self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+        print("TRANSPORT structuredContent supplied the connection token")
 
     def test_account_busy_is_not_on_the_login_clock(self):
         with tempfile.TemporaryDirectory() as tmp:

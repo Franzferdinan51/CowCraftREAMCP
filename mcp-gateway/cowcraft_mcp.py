@@ -319,15 +319,25 @@ class CowCraft:
             }
             return self._exchange(payload)
 
-    def _unwrap_tool(self, name, result):
-        content = result.get("content") or [{}]
+    def _tool_body(self, result):
+        """Live CowCraft puts the payload in structuredContent. The stub uses content text."""
+        if isinstance(result, dict):
+            structured = result.get("structuredContent")
+            if isinstance(structured, dict) and structured:
+                return structured
+        content = (result or {}).get("content") or [{}]
         text = "{}"
         if content and isinstance(content[0], dict):
             text = content[0].get("text", "{}")
+        if isinstance(text, dict):
+            return text
         try:
-            inner = json.loads(text)
+            return json.loads(text)
         except json.JSONDecodeError:
             return {"raw": text}
+
+    def _unwrap_tool(self, name, result):
+        inner = self._tool_body(result)
         if isinstance(inner, dict) and isinstance(inner.get("error"), dict):
             err = inner["error"]
             code = err.get("code")
