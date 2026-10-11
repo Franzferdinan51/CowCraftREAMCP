@@ -8,8 +8,10 @@ the vendored cowcraft_mcp client.
 
 Resilience lives in cowcraft_mcp (one policy for this proxy and direct
 clients):
-- a saved lease is copied to its .bak file and left held; login does not
-  disconnect that token. A later process releases the backup
+- a saved lease for this account is resumed in place. Login does not
+  disconnect it, does not open a second connection, and copies it to
+  the .bak file first. A later process releases that backup. A dead
+  lease is the only case that signs in again
 - transport retries: exponential backoff on IncompleteRead and
   RemoteDisconnected (three failures stop)
 - account_busy is not rate_limited: it does not start the login clock
@@ -40,8 +42,10 @@ from cowcraft_mcp import (  # noqa: E402
     CowCraft,
     CowCraftError,
     account_state_paths,
-    park_saved_token,
+    backup_connection_token,
     classify_failure,
+    load_connection_owner,
+    load_connection_token,
     transport_backoff_seconds,
 )
 
@@ -52,6 +56,9 @@ LOG_PATH = os.environ.get("MINTA_COWCRAFT_LOG")  # optional json-lines log
 
 RECONNECT_COOLDOWN = 10.0   # seconds between reconnects per account
 IDLE_REAP_AFTER = 600.0     # release upstream session after 10 min idle
+# The server has already dropped these. A fresh sign-in will not
+# collide with them, and they must not be disconnected again.
+_DEAD_LEASE = frozenset({"invalid_connection", "lease_expired", "not_authenticated"})
 
 
 def proxy_transport_delay(attempt):
@@ -140,10 +147,12 @@ class CowCraftBackend(WoWBackend):
                                "reconnect cooldown; try again shortly")
         if not explicit_login:
             s.last_reconnect = time.time()
-        # Park a saved lease in the .bak file. Do not disconnect it: a later
-        # process still has to release that token. Never touch another account.
+        # A token already on disk is this account's live lease. Resume it.
+        # Parking it and opening another connection makes the server answer
+        # account_busy, or drops the lease a later process still has to release.
+        if self._resume_saved_lease(s):
+            return True
         try:
-            park_saved_token(s.game.token_path, account=s.username)
             s.game.connect(s.agent_label or s.username)
             if not s.password:
                 raise BackendError("not_authenticated",
@@ -155,12 +164,73 @@ class CowCraftBackend(WoWBackend):
             s.errors += 1
             s.last_error = str(exc)[:200]
             kind = classify_failure(exc.code)
+            if kind == "account_busy":
+                # connect() stored this attempt's token. It is not the lease
+                # the server is holding, and resuming it would skip the retry.
+                self._drop_rejected_connection(s)
             if kind in ("account_busy", "rate_limited"):
                 raise BackendError(kind, str(exc)[:200])
             raise BackendError("upstream_error", str(exc)[:200])
         s.connected = True
         s.last_use = time.time()
         return True
+
+    def _resume_saved_lease(self, s):
+        """Adopt this account's saved token. Do not connect, login, or disconnect.
+
+        The token is copied to the .bak file and left in the active file.
+        characters() is the proof the lease still answers. A dead lease
+        returns False so the caller can sign in once. Transport loss raises
+        and leaves both copies in place. Another account's file is not read
+        past the owner check and is not modified.
+        """
+        path = s.game.token_path
+        token = load_connection_token(path)
+        if not token:
+            return False
+        owner = load_connection_owner(path)
+        if owner and s.username and owner != s.username:
+            return False
+        backup_connection_token(path)
+        s.game.connection = token
+        try:
+            s.game.initialize()
+            s.game.characters()
+        except CowCraftError as exc:
+            if exc.code in _DEAD_LEASE:
+                s.game.connection = None
+                return False
+            kind = classify_failure(exc.code)
+            if kind in ("account_busy", "rate_limited"):
+                raise BackendError(kind, str(exc)[:200])
+            raise BackendError("upstream_error", str(exc)[:200])
+        s.login_body = {
+            "username": s.username,
+            "resumed": True,
+            "state": "resumed",
+        }
+        s.connected = True
+        s.last_use = time.time()
+        return True
+
+    def _drop_rejected_connection(self, s):
+        """Remove a connection token that login refused.
+
+        A token already copied to .bak or .held is a lease a later process
+        still has to release, so the active file is left alone in that case.
+        """
+        path = s.game.token_path
+        current = s.game.connection
+        if not current or load_connection_token(path) != current:
+            return
+        for suffix in (".bak", ".held"):
+            if load_connection_token(os.fspath(path) + suffix) == current:
+                return
+        for suffix in ("", ".owner"):
+            try:
+                os.remove(os.fspath(path) + suffix)
+            except FileNotFoundError:
+                pass
 
     def _call(self, s, op, fn, *args, **kwargs):
         """Run fn once. Transport backoff and login clocks live on the client.

@@ -50,8 +50,9 @@ TOOLS = [
         "description": (
             "Step 2. Sign in as the caller. Any username and password are sent "
             "as given. One lease per account, and at most one login per 60 "
-            "seconds. account_busy is not rate_limited: disconnect the saved "
-            "lease, wait, and try once. On rate_limited, wait for "
+            "seconds. account_busy is not rate_limited. A saved token for this "
+            "account is resumed and left held; a later process releases only "
+            "the backup. If login is still busy, wait and try once. On rate_limited, wait for "
             "retry_after_ms. Never busy-loop."
         ),
         "inputSchema": {

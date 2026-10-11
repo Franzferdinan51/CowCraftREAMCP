@@ -694,6 +694,12 @@ class CowCraft:
         )
         if not target:
             return None
+        # A copy already set aside for a later process stays held. Disconnecting
+        # it here is what made that later release see invalid_connection.
+        for suffix in (".bak", ".held"):
+            parked = load_connection_token(os.fspath(self.token_path) + suffix)
+            if parked and parked == target:
+                return None
         self.disconnect(token=target)
         if load_connection_token(self.token_path) == target:
             return None

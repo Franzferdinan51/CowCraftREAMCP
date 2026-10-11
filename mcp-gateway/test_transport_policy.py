@@ -21,6 +21,7 @@ from cowcraft_mcp import (  # noqa: E402
     CowCraft,
     CowCraftError,
     account_busy_wait_seconds,
+    load_connection_token,
     save_connection_token,
     transport_backoff_seconds,
 )
@@ -244,6 +245,35 @@ class TransportPolicyTest(unittest.TestCase):
             self.assertEqual(len(harness.named(transport.payloads, "login")), 2)
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
             print("TRANSPORT account_busy was not on the login-retry clock")
+
+    def test_account_busy_does_not_disconnect_a_backed_up_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = os.path.join(tmp, "conn.txt")
+            model_path = os.path.join(tmp, "model.txt")
+            save_connection_token(token_path, "saved-lease-token")
+            save_connection_token(token_path + ".bak", "saved-lease-token")
+            client, transport, _clock = self._client(
+                [
+                    harness.tool_result({
+                        "error": {
+                            "code": "account_busy",
+                            "message": "lease held",
+                        },
+                    }),
+                ],
+                token_path=token_path,
+                model_path=model_path,
+            )
+            client.connection = "fresh-issued-token"
+            with self.assertRaises(CowCraftError) as caught:
+                client.login("ada", harness.fixture_secret())
+            self.assertEqual(caught.exception.code, "account_busy")
+            self.assertNotEqual(caught.exception.code, "rate_limited")
+            self.assertEqual(harness.named(transport.payloads, "disconnect"), [])
+            self.assertEqual(load_connection_token(token_path), "saved-lease-token")
+            self.assertEqual(load_connection_token(token_path + ".bak"), "saved-lease-token")
+            self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+            print("TRANSPORT account_busy left the backed-up lease held")
 
     def test_sent_log_keeps_only_the_newest_payloads(self):
         extra = 5

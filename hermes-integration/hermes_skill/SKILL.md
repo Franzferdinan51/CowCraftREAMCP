@@ -47,7 +47,7 @@ export MINTA_GATEWAY_URL=http://127.0.0.1:8901/mcp
 The gateway's `initialize` result includes `instructions`. Follow that order:
 
 1. `connect` with a stable `model_name` (the agent label). Reuse it for that character.
-2. `login` with this caller's username and password. At most one login per 60 seconds. `account_busy` is not `rate_limited`: disconnect the saved lease, wait, and try once. On `rate_limited`, wait for `retry_after_ms`.
+2. `login` with this caller's username and password. At most one login per 60 seconds. A saved connection token for this account is resumed and is not disconnected. `account_busy` is not `rate_limited`: wait and try once, and leave a backup copy for a later process to release. On `rate_limited`, wait for `retry_after_ms`.
 3. `characters`, then `select_character` with an integer guid. On `benchmark_selection_rejected`, do not retry that character. Select another, or create a level-1 Human (race 1) and select that once.
 4. `observe`, then act. Observe and heartbeat share one call per second. Confirm the action with a new observe. Attack casts a spell the server listed when power can pay for it. Loot opens the body, observes the ui section, takes the listed slots and any money, then closes.
 5. `disconnect` when finished.

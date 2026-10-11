@@ -267,15 +267,14 @@ class ProxyLeaseTest(unittest.TestCase):
     def test_proxy_disconnects_persisted_token_not_the_new_one(self):
         secret = harness.fixture_secret()
         saved = "saved-lease-token"
-        issued = "fresh-issued-token"
         with tempfile.TemporaryDirectory() as tmp:
             token_path = os.path.join(tmp, "conn.txt")
             model_path = os.path.join(tmp, "model.txt")
             save_connection_token(token_path, saved)
             transport = harness.FakeTransport([
                 harness.rpc_result({"protocolVersion": "2024-11-05"}),
-                harness.tool_result({"connection": issued}),
-                harness.tool_result({"username": "ada"}),
+                harness.tool_result({"characters": [{"name": "Ada", "guid": 1}]}),
+                harness.tool_result({"self": {"money": {"copper": 9}}}),
             ])
 
             def factory(username=None):
@@ -287,11 +286,20 @@ class ProxyLeaseTest(unittest.TestCase):
                 )
 
             backend = CowCraftBackend(client_factory=factory)
-            result = backend.login("ada", secret)
+            result = backend.login("ada", secret, agent_label="ada")
             self.assertEqual(result["username"], "ada")
+            self.assertIs(result["resumed"], True)
+            observed = backend.observe("ada")
+            self.assertEqual(observed["self"]["money"]["copper"], 9)
+            again = backend.login("ada", secret, agent_label="ada")
+            self.assertIs(again["resumed"], True)
             self.assertEqual(harness.named(transport.payloads, "disconnect"), [])
+            self.assertEqual(harness.named(transport.payloads, "connect"), [])
+            self.assertEqual(harness.named(transport.payloads, "login"), [])
+            observe = harness.named(transport.payloads, "observe")
+            self.assertEqual(observe[0]["params"]["arguments"]["connection"], saved)
             self.assertEqual(load_connection_token(token_path + ".bak"), saved)
-            self.assertEqual(load_connection_token(token_path), issued)
+            self.assertEqual(load_connection_token(token_path), saved)
             with open(token_path + ".bak", encoding="utf-8") as handle:
                 text = handle.read()
             self.assertNotIn(secret, text)
@@ -559,12 +567,50 @@ class ProxyLeaseTest(unittest.TestCase):
     def test_proxy_backs_up_saved_token_before_replace(self):
         password = harness.fixture_secret()
         saved = "saved-lease-token"
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = os.path.join(tmp, "conn.txt")
+            save_connection_token(token_path, saved)
+            backend, transport = self._proxy(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"characters": [{"name": "Ada", "guid": 1}]}),
+                ],
+                token_path,
+                os.path.join(tmp, "model.txt"),
+            )
+            result = backend.login("ada", password)
+            self.assertEqual(result["username"], "ada")
+            self.assertEqual(result["state"], "resumed")
+            self.assertIs(result["resumed"], True)
+            self.assertEqual(load_connection_token(token_path), saved)
+            self.assertEqual(harness.named(transport.payloads, "disconnect"), [])
+            self.assertEqual(harness.named(transport.payloads, "connect"), [])
+            self.assertEqual(harness.named(transport.payloads, "login"), [])
+            backup = token_path + ".bak"
+            self.assertEqual(load_connection_token(backup), saved)
+            with open(backup, encoding="utf-8") as handle:
+                text = handle.read()
+            self.assertNotIn(password, text)
+            self.assertNotIn("password", text.lower())
+            self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+        print("PROXY backed up the saved token and resumed it without replacing it")
+
+    def test_proxy_dead_saved_token_signs_in_without_disconnect(self):
+        password = harness.fixture_secret()
+        saved = "dead-lease-token"
         issued = "fresh-issued-token"
         with tempfile.TemporaryDirectory() as tmp:
             token_path = os.path.join(tmp, "conn.txt")
             save_connection_token(token_path, saved)
             backend, transport = self._proxy(
                 [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({
+                        "error": {
+                            "code": "invalid_connection",
+                            "message": "lease is already gone",
+                        },
+                    }),
                     harness.rpc_result({"protocolVersion": "2024-11-05"}),
                     harness.tool_result({"connection": issued}),
                     harness.tool_result({
@@ -575,19 +621,15 @@ class ProxyLeaseTest(unittest.TestCase):
                 token_path,
                 os.path.join(tmp, "model.txt"),
             )
-            result = backend.login("ada", password)
+            result = backend.login("ada", password, agent_label="ada")
             self.assertEqual(result["username"], "ada")
             self.assertEqual(result["state"], "character_selection")
             self.assertEqual(load_connection_token(token_path), issued)
+            self.assertEqual(load_connection_token(token_path + ".bak"), saved)
             self.assertEqual(harness.named(transport.payloads, "disconnect"), [])
-            backup = token_path + ".bak"
-            self.assertEqual(load_connection_token(backup), saved)
-            with open(backup, encoding="utf-8") as handle:
-                text = handle.read()
-            self.assertNotIn(password, text)
-            self.assertNotIn("password", text.lower())
+            self.assertEqual(len(harness.named(transport.payloads, "login")), 1)
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
-        print("PROXY backed up the saved token before replacing it")
+        print("PROXY a dead saved lease signed in again without a disconnect")
 
     def test_proxy_forwards_spell_limit_and_ui_sections(self):
         password = harness.fixture_secret()

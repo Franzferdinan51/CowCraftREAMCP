@@ -2,9 +2,10 @@
 
 ## `account_busy` on login
 
-Another session holds the account. This is not a rate limit. Disconnect
-the saved lease for this account, wait, and try login once. Do not
-busy-loop login. A `benchmark_selection_rejected` character is bound to
+Another session holds the account. This is not a rate limit. A saved
+connection token for this account is resumed and must not be disconnected.
+Wait and try login once. A later process releases only the backup copy.
+Do not busy-loop login. A `benchmark_selection_rejected` character is bound to
 a different agent label; do not retry it. Pass the original `model_name`,
 or enter a different character.
 
