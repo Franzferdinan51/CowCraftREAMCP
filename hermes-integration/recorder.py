@@ -4,8 +4,8 @@ recorder.py — Record and replay CowCraft agent sessions.
 
 bot_mode appends one private JSON row per tick under ~/.cowcraft/training/.
 That directory is outside the git checkout. Passwords and connection tokens
-are dropped before a row is written. Set record to false or COWCRAFT_RECORD=0
-to skip it. Replay and stats read that file locally.
+are dropped before a row is written. Recording is off unless "record" is true
+or COWCRAFT_RECORD=1. Replay and stats read that file locally.
 
 Usage:
     python3 recorder.py replay --in ~/.cowcraft/training/cowcraft-YYYYMMDD.jsonl
@@ -71,6 +71,18 @@ def sanitize_entry(entry):
     if isinstance(entry, str):
         return _TOKEN.sub("[redacted]", entry)
     return entry
+
+
+def recording_enabled(cfg=None, env=None):
+    """Training rows stay off unless config or COWCRAFT_RECORD turns them on."""
+    cfg = cfg or {}
+    if env is None:
+        env = os.environ
+    if cfg.get("record") is False:
+        return False
+    if cfg.get("record") is True:
+        return True
+    return env.get("COWCRAFT_RECORD") == "1"
 
 
 def training_log_path(requested=None):

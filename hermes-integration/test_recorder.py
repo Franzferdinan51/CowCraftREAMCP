@@ -15,6 +15,7 @@ from recorder import (  # noqa: E402
     TickLogger,
     cmd_stats,
     local_training_path,
+    recording_enabled,
     outside_repo,
     repo_root,
     sanitize_entry,
@@ -69,6 +70,11 @@ class RecorderPrivacyTest(unittest.TestCase):
             self.assertIn("loot", text)
             self.assertIn("progressed acts: 1", text)
             self.assertIn("main-model", text)
+        self.assertFalse(recording_enabled({}))
+        self.assertFalse(recording_enabled({}, {"COWCRAFT_RECORD": "0"}))
+        self.assertFalse(recording_enabled({"record": False}, {"COWCRAFT_RECORD": "1"}))
+        self.assertTrue(recording_enabled({"record": True}))
+        self.assertTrue(recording_enabled({}, {"COWCRAFT_RECORD": "1"}))
         print("RECORDER training rows stay outside the repo and drop secrets")
 
 

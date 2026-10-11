@@ -67,7 +67,7 @@ python3 swarm_coordinator.py --config swarm.json
 
 **5. Record a session for local training:**
 
-`bot_mode.py` appends one JSON row per tick to `~/.cowcraft/training/`. That directory is outside the git checkout. `*.jsonl` is gitignored, so a recording left inside the repo is not committed. Set `"record": false` or `COWCRAFT_RECORD=0` to skip it. Rows keep the observation summary, optional decision advice, and the action the main model took. Passwords and connection tokens are dropped.
+`bot_mode.py` does not record unless `"record": true` or `COWCRAFT_RECORD=1`. When that is set, it appends one JSON row per tick to `~/.cowcraft/training/`. That directory is outside the git checkout. `*.jsonl` is gitignored, so a recording left inside the repo is not committed. Rows keep the observation summary, optional decision advice, and the action the main model took. Passwords and connection tokens are dropped. `"record": false` stays off even if the environment variable is set.
 
 ```bash
 python3 recorder.py stats --in ~/.cowcraft/training/cowcraft-YYYYMMDD.jsonl

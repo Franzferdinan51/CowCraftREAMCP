@@ -55,7 +55,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp-gateway"))
 from cowcraft_env import CowCraftEnv  # noqa: E402
 from auto_model_judge import AutoModelJudge, bounded_world_summary  # noqa: E402
 from cowcraft_mcp import account_state_paths  # noqa: E402
-from recorder import TickLogger, training_log_path  # noqa: E402
+from recorder import TickLogger, recording_enabled, training_log_path  # noqa: E402
 
 VALID_ACTIONS = [
     "move_north", "move_south", "move_east", "move_west",
@@ -151,7 +151,7 @@ def run_bot(cfg):
 
     judge = AutoModelJudge()
     training = None
-    if cfg.get("record") is not False and os.environ.get("COWCRAFT_RECORD", "1") != "0":
+    if recording_enabled(cfg):
         training = TickLogger(training_log_path(cfg.get("record_path")))
         logger.info("training rows append to a private file outside the repo")
 
