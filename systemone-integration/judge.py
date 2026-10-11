@@ -24,10 +24,9 @@ import urllib.request
 import urllib.error
 
 SHIM_URL = os.environ.get("SYSTEMONE_SHIM_URL", "http://127.0.0.1:8765").rstrip("/")
-# SystemOne defaults: d1-3b decides, d1-omni-600m is the fast fallback.
+# Decision models advise the main model. They are not selected as the action.
 DECISION_MODEL = "d1-3b"
 FAST_MODEL = "d1-omni-600m"
-DECISION_MODELS = (DECISION_MODEL, FAST_MODEL)
 
 
 def _post(path, payload, timeout=60):
@@ -39,16 +38,6 @@ def _post(path, payload, timeout=60):
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode())
-
-
-def decision_models(requested=None):
-    """d1-3b then d1-omni-600m, or exactly one of them when pinned."""
-    if isinstance(requested, str):
-        name = requested.strip().lower()
-        for model in DECISION_MODELS:
-            if name == model:
-                return (model,)
-    return DECISION_MODELS
 
 
 def choice_criteria(question):
@@ -88,8 +77,8 @@ def decision_payload(state_text, question, model):
     return {
         "state": state_text,
         "instructions": (
-            "You are the brain of a World of Warcraft agent. "
-            "Pick exactly one action from the listed options."
+            "Advise the main model what it could do and what it could use "
+            "in game. This advice is not required."
         ),
         "type": "choice",
         "criteria": criteria,
@@ -109,33 +98,35 @@ class SystemOneShimJudge:
             (q for q in questions if q.get("id") == "action" or "action" in q.get("id", "")),
             questions[0] if questions else None,
         )
-        models = decision_models(self.model)
-        last_exc = None
-        for model in models:
-            payload = decision_payload(state_text, action_q, model)
-            try:
-                out = _post_shim(self.shim_url, "/v1/systemone/decide", payload)
-            except Exception as exc:
-                last_exc = exc
-                continue
-            choice = out.get("choice") or out.get("label") or "wait"
-            try:
-                conf = float(out.get("confidence", 0.5))
-            except (TypeError, ValueError):
-                conf = 0.5
-            answers = {
-                "action": {"choice": choice, "confidence": conf},
-                "_meta": {
-                    "backend": out.get("backend", "systemone"),
-                    "model": out.get("model") or model,
-                },
-            }
-            for q in questions:
-                qid = q.get("id")
-                if qid and qid != "action" and qid in out:
-                    answers[qid] = out[qid]
-            return answers
-        raise RuntimeError(f"systemone shim unreachable: {last_exc}") from last_exc
+        model = self.model if isinstance(self.model, str) and self.model.strip() else DECISION_MODEL
+        payload = decision_payload(state_text, action_q, model)
+        try:
+            out = _post_shim(self.shim_url, "/v1/systemone/decide", payload)
+        except Exception as exc:
+            raise RuntimeError(f"systemone shim unreachable: {exc}") from exc
+        choice = out.get("choice") or out.get("label") or "wait"
+        try:
+            conf = float(out.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            conf = 0.5
+        use = out.get("use")
+        advice = "Decision advice, not required. %s: %s" % (model, choice)
+        if use:
+            advice += " use=%s" % use
+        answers = {
+            "advice": {"text": advice, "required": False, "do": choice, "use": use},
+            "action": {"choice": choice, "confidence": conf},
+            "_meta": {
+                "backend": out.get("backend", "systemone"),
+                "model": out.get("model") or model,
+                "advice_required": False,
+            },
+        }
+        for q in questions:
+            qid = q.get("id")
+            if qid and qid != "action" and qid in out:
+                answers[qid] = out[qid]
+        return answers
 
 
 def _post_shim(base, path, payload, timeout=60):

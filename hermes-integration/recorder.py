@@ -140,7 +140,7 @@ def cmd_verify(args):
             if e.get("type") == "observe":
                 last_obs = e["text"]
             elif e.get("type") == "decide" and last_obs:
-                action, conf, _m = decide(last_obs[:1500])
+                action, conf, _m, _advice = decide(last_obs[:1500])
                 total += 1
                 if action == e.get("action"):
                     match += 1

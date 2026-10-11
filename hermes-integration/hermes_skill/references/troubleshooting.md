@@ -35,10 +35,10 @@ response includes `retry_after_ms` — honor it, don't busy-loop.
 
 ## Model not responding
 
-`auto_model_judge` calls only `d1-3b`, then `d1-omni-600m`, and only when
-that id is already loaded. It never loads a model. If neither id is in
-the LM Studio model list, the bot chooses `wait` and does not send a
-completion. Check `http://100.68.208.113:1234/v1/models`.
+`d1-3b` and `d1-omni-600m` only advise what to do and what to use. The
+main model does not have to follow them. If they are not already loaded,
+the tick continues with no advice. The bot does not load a model. Check
+`http://100.68.208.113:1234/v1/models`.
 
 ## Health endpoint
 

@@ -185,8 +185,10 @@ def run_bot(cfg):
             obs = env.observe()
             summary = bounded_world_summary(getattr(obs, "info", {}) or {})
             answers = judge(summary, [{"id": "action"}])
-            action = answers.get("action", {}).get("choice", "wait")
-            conf = answers.get("action", {}).get("confidence", 0.0)
+            main = answers.get("main") if isinstance(answers.get("main"), dict) else {}
+            action = main.get("choice") or answers.get("action", {}).get("choice", "wait")
+            conf = main.get("confidence", answers.get("action", {}).get("confidence", 0.0))
+            advice = answers.get("advice") if isinstance(answers.get("advice"), dict) else {}
             if conf < 0.35 or action not in VALID_ACTIONS:
                 action = "wait"
             if action == last_action:
@@ -202,8 +204,9 @@ def run_bot(cfg):
                 f"tick {tick}: saw {obs.text.splitlines()[0][:70] if obs.text else '?'} "
                 f"| chose {action} ({conf:.2f}) | "
                 f"{'progressed' if result.progressed else 'no progress'}")
-            logger.info("tick %d: %s conf=%.2f %s", tick, action, conf,
-                        "ok" if result.progressed else "--")
+            logger.info("tick %d: %s conf=%.2f %s advice=%s", tick, action, conf,
+                        "ok" if result.progressed else "--",
+                        "none" if not advice.get("text") else "optional")
             _health.update(tick=tick, last_action=action, last_error=None,
                            uptime_s=int(time.time() - started))
             tick += 1

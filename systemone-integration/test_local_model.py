@@ -7,12 +7,15 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from auto_model_judge import (  # noqa: E402
+    advice_text,
     bounded_world_summary,
     choose_action,
-    other_decision_model,
-    select_decision_model,
+    decision_model_ids,
+    executed_action,
+    main_model_id,
+    prompt_with_advice,
 )
-from judge import build_questions, choice_criteria, decision_models, decision_payload  # noqa: E402
+from judge import build_questions, choice_criteria, decision_payload  # noqa: E402
 from cowcraft_env import ACTIONS  # noqa: E402
 
 
@@ -66,27 +69,30 @@ class LocalModelTest(unittest.TestCase):
         self.assertLessEqual(len(huge), 600)
         print("LOCAL summary listed self, hostiles, and money inside 600 characters")
 
-    def test_only_d1_3b_then_d1_omni_are_decision_models(self):
-        loaded = ["mimo-v2.6", "d1-omni-600m", "d1-3b-q4"]
-        self.assertEqual(select_decision_model(loaded), "d1-3b-q4")
-        self.assertEqual(select_decision_model(["llama", "d1-omni-600m"]), "d1-omni-600m")
-        self.assertIsNone(select_decision_model(["mimo-v2.6"]))
-        self.assertIsNone(select_decision_model([]))
-        self.assertEqual(
-            other_decision_model("d1-3b-q4", loaded), "d1-omni-600m")
-        self.assertIsNone(other_decision_model("d1-3b", ["d1-3b"]))
-        self.assertEqual(decision_models(None), ("d1-3b", "d1-omni-600m"))
-        self.assertEqual(decision_models("d1-omni-600m"), ("d1-omni-600m",))
-        self.assertEqual(decision_models("mimo-v2.6"), ("d1-3b", "d1-omni-600m"))
+    def test_decision_advice_does_not_choose_the_action(self):
+        loaded = ["main-model", "d1-omni-600m", "d1-3b"]
+        self.assertEqual(decision_model_ids(loaded), ["d1-3b", "d1-omni-600m"])
+        self.assertEqual(main_model_id(loaded), "main-model")
+        self.assertIsNone(main_model_id(["d1-3b", "d1-omni-600m"]))
+        advice = advice_text([
+            ("d1-3b", "attack the wolf"),
+            ("d1-omni-600m", "use shadow bolt"),
+        ])
+        self.assertIn("not required", advice)
+        self.assertIn("shadow bolt", advice)
+        self.assertEqual(executed_action("loot", advice), "loot")
+        self.assertEqual(executed_action(None, advice), "wait")
+        self.assertEqual(executed_action("", advice), "wait")
+        shown = prompt_with_advice("self hp=10", advice)
+        self.assertIn("self hp=10", shown)
+        self.assertIn("not required to follow", shown)
         payload = decision_payload("self hp=10", build_questions(ACTIONS)[0], "d1-3b")
-        self.assertEqual(payload["model"], "d1-3b")
-        self.assertEqual(payload["type"], "choice")
+        self.assertIn("not required", payload["instructions"])
         self.assertIn("attack", payload["criteria"])
-        self.assertNotIn("options", payload["criteria"])
-        for desc in payload["criteria"].values():
-            self.assertTrue(desc is None or isinstance(desc, str))
+        self.assertNotIn("d1-3b", payload["criteria"])
+        self.assertNotIn("d1-omni-600m", payload["criteria"])
         self.assertEqual(choice_criteria({"options": [{"name": "attack"}]}), {"attack": None})
-        print("LOCAL decision models are d1-3b then d1-omni-600m")
+        print("LOCAL decision advice is optional and the main model chooses")
 
 
 if __name__ == "__main__":

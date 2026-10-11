@@ -2,9 +2,9 @@
 """
 auto_model_judge.py — Auto-detects what's loaded in LM Studio and uses it.
 
-Never triggers a new model load. Queries /v1/models and calls only
-d1-3b, then d1-omni-600m when that id is already loaded. Other models
-are not called.
+Never triggers a new model load. d1-3b and d1-omni-600m advise the
+main model what to do and what to use in game. That advice is not
+required. The main model, any other loaded model, chooses the action.
 
 Supports up to 4 parallel requests via thread pool (for swarm use).
 
@@ -13,7 +13,7 @@ This avoids RAM overload by never loading new models.
 Env vars:
     LMSTUDIO_URL — LM Studio base URL (default: http://100.68.208.113:1234)
     LMSTUDIO_API_KEY_FILE — path to API key (default: ~/.config/lmstudio/api_key)
-    PREFER_MODEL — ignored. Decisions use d1-3b, then d1-omni-600m.
+    PREFER_MODEL — ignored. d1-3b and d1-omni-600m only give advice.
     MAX_PARALLEL — max concurrent model requests (default: 4)
 """
 
@@ -121,34 +121,61 @@ def _curl(args, timeout=15):
     return result.stdout
 
 
-def select_decision_model(loaded_models):
-    """Return d1-3b if that id is listed, else d1-omni-600m.
-
-    Any other loaded model is ignored. An empty list returns None.
-    """
+def _loaded_ids(loaded_models):
     found = []
     for item in loaded_models or []:
         if isinstance(item, str) and item.strip():
             found.append(item.strip())
+    return found
+
+
+def decision_model_ids(loaded_models):
+    """Loaded d1-3b and d1-omni-600m. These advise. They are not the action."""
+    found = _loaded_ids(loaded_models)
+    chosen = []
     for wanted in DECISION_MODELS:
         for mid in found:
-            if wanted in mid.lower():
-                return mid
+            if wanted in mid.lower() and mid not in chosen:
+                chosen.append(mid)
+                break
+    return chosen
+
+
+def main_model_id(loaded_models):
+    """The loaded model that plays. A decision model is not the main model."""
+    for mid in _loaded_ids(loaded_models):
+        if not any(wanted in mid.lower() for wanted in DECISION_MODELS):
+            return mid
     return None
 
 
-def other_decision_model(chosen, loaded_models):
-    """The other D1 id, when it is loaded and different from chosen."""
-    chosen_l = (chosen or "").lower()
-    for wanted in DECISION_MODELS:
-        if wanted in chosen_l:
-            continue
-        alt = select_decision_model(
-            [mid for mid in (loaded_models or [])
-             if isinstance(mid, str) and wanted in mid.lower()])
-        if alt and alt.lower() != chosen_l:
-            return alt
-    return None
+def advice_text(parts):
+    """Join decision-model replies into advice the main model may ignore."""
+    lines = []
+    for mid, raw in parts or []:
+        text = " ".join(str(raw or "").split())
+        if text:
+            lines.append("%s: %s" % (mid, text[:180]))
+    if not lines:
+        return None
+    return "Decision advice, not required. " + " | ".join(lines)
+
+
+def prompt_with_advice(state_text, advice):
+    if not advice:
+        return state_text
+    return (
+        "%s\n\n%s\nThe main model is not required to follow this."
+        % (state_text, advice)
+    )
+
+
+def executed_action(main_reply, advice=None):
+    """The main model's reply is the action. Advice does not change it."""
+    if main_reply is None or not str(main_reply).strip():
+        return "wait"
+    action, _log = choose_action(["main"], main_reply)
+    return action
 
 
 def get_loaded_models():
@@ -164,27 +191,36 @@ def get_loaded_models():
         return []
 
 
-def pick_model():
-    """Pick d1-3b, else d1-omni-600m, from models already loaded.
+ADVICE_PROMPT = (
+    "You advise the main model about this character. "
+    "Say what it could do and what it could use in game. "
+    "The main model is not required to follow you."
+)
+MAIN_PROMPT = (
+    "You are the main model playing this character. "
+    "Decision-model advice may be included and is not required. "
+    "Reply with ONLY the action name."
+)
 
-    Does not load a model. Returns None when neither id is loaded.
-    """
+
+def pick_model():
+    """The loaded main model. Does not load one and does not return a decision model."""
     global _cached_model
     with _model_lock:
         if _cached_model:
             return _cached_model
-        chosen = select_decision_model(get_loaded_models())
+        chosen = main_model_id(get_loaded_models())
         if chosen:
             _cached_model = chosen
         return chosen
 
 
-def _ask_model(model, state_text, system_prompt, max_tokens):
+def _complete(model, state_text, system_prompt, max_tokens):
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"{state_text}\n\nPick one: {', '.join(VALID_ACTIONS)}"},
+            {"role": "user", "content": state_text},
         ],
         "max_tokens": max_tokens,
     }
@@ -195,38 +231,44 @@ def _ask_model(model, state_text, system_prompt, max_tokens):
         "-d", json.dumps(payload),
     ], timeout=60)
     data = json.loads(out)
-    raw = data["choices"][0]["message"]["content"].strip().lower()
-    action, _log = choose_action([model], raw)
-    words = re.findall(r"[a-z0-9_]+", raw)
-    if action in words or raw.strip() == action:
-        return action, 0.8, model
-    return "wait", 0.3, model
+    return data["choices"][0]["message"]["content"].strip()
+
+
+def collect_advice(loaded_models, state_text, ask):
+    """Ask each loaded decision model. A failed call is skipped."""
+    parts = []
+    for mid in decision_model_ids(loaded_models):
+        try:
+            raw = ask(mid, state_text, ADVICE_PROMPT, 40)
+        except Exception:
+            continue
+        parts.append((mid, raw))
+    return advice_text(parts)
 
 
 def decide(state_text, system_prompt=None, max_tokens=20):
-    """Ask d1-3b, then d1-omni-600m, to pick an action.
+    """Main model chooses the action. Decision models only attach advice.
 
-    Returns (action, confidence, model_used). Neither call happens unless
-    that model id is already loaded. A failed call tries the other id once.
+    Returns (action, confidence, model_used, advice). advice is None when
+    no decision model answered. Their text is not executed.
     """
     loaded = get_loaded_models()
-    model = select_decision_model(loaded)
-    if not model:
-        return "wait", 0.0, None
-
-    if system_prompt is None:
-        system_prompt = "You are a WoW agent. Reply with ONLY the action name."
-
+    advice = collect_advice(
+        loaded, state_text,
+        lambda model, text, prompt, limit: _complete(model, text, prompt, limit),
+    )
+    main = main_model_id(loaded)
+    if not main:
+        return "wait", 0.0, None, advice
+    prompt = system_prompt or MAIN_PROMPT
     try:
-        return _ask_model(model, state_text, system_prompt, max_tokens)
+        raw = _complete(main, prompt_with_advice(state_text, advice), prompt, max_tokens)
     except Exception:
-        alt = other_decision_model(model, loaded)
-        if not alt:
-            return "wait", 0.0, model
-        try:
-            return _ask_model(alt, state_text, system_prompt, max_tokens)
-        except Exception:
-            return "wait", 0.0, alt
+        return "wait", 0.0, main, advice
+    action = executed_action(raw, advice)
+    if action == "wait":
+        return action, 0.3, main, advice
+    return action, 0.8, main, advice
 
 
 def decide_parallel(requests):
@@ -242,7 +284,7 @@ def decide_parallel(requests):
         _executor.submit(decide, state, prompt, tokens)
         for state, prompt, tokens in requests
     ]
-    return [f.result() for f in futures]
+    return [f.result()[:3] for f in futures]
 
 
 class AutoModelJudge:
@@ -263,10 +305,17 @@ class AutoModelJudge:
             return self._model
 
     def __call__(self, state_text, questions, images=(), videos=(), **kw):
-        action, conf, model = decide(state_text)
+        action, conf, model, advice = decide(state_text)
         return {
+            "main": {"choice": action, "confidence": conf},
             "action": {"choice": action, "confidence": conf},
-            "_meta": {"model": model, "backend": "lmstudio-auto", "no_new_loads": True},
+            "advice": {"text": advice, "required": False},
+            "_meta": {
+                "model": model,
+                "backend": "lmstudio-auto",
+                "no_new_loads": True,
+                "advice_required": False,
+            },
         }
 
     def decide_batch(self, states):
@@ -275,8 +324,15 @@ class AutoModelJudge:
         results = decide_parallel(requests)
         return [
             {
+                "main": {"choice": action, "confidence": conf},
                 "action": {"choice": action, "confidence": conf},
-                "_meta": {"model": model, "backend": "lmstudio-auto", "parallel": True},
+                "advice": {"text": None, "required": False},
+                "_meta": {
+                    "model": model,
+                    "backend": "lmstudio-auto",
+                    "parallel": True,
+                    "advice_required": False,
+                },
             }
             for action, conf, model in results
         ]

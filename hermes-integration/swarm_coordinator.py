@@ -214,7 +214,8 @@ class CrewAgent(threading.Thread):
     def _decide(self, state):
         # Single-agent fallback; coordinator overrides with parallel batch.
         from auto_model_judge import decide
-        return decide(state)
+        action, conf, model, _advice = decide(state)
+        return action, conf, model
 
 
 class Coordinator:
