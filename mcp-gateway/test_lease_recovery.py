@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from http.client import IncompleteRead
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["BACKEND"] = "stub"
@@ -25,6 +26,7 @@ from cowcraft_mcp import (  # noqa: E402
     CowCraft,
     CowCraftError,
     account_busy_wait_seconds,
+    load_connection_token,
     save_connection_token,
 )
 
@@ -170,6 +172,43 @@ class LeaseRecoveryTest(unittest.TestCase):
             "busyuser",
         )
         print("LEASE account_busy did not start the login-retry clock")
+
+    def test_dropped_disconnect_keeps_the_token_for_a_later_release(self):
+        secret = harness.fixture_secret()
+        clock = harness.ManualClock()
+        client = self.client("conn.txt", "model.txt", clock=clock)
+        token = client.connect("Juno-Model_1")
+        client.register("dropuser", secret)
+        client.login("dropuser", secret)
+        self.assertEqual(load_connection_token(client.token_path), token)
+        self.assertIsNotNone(gateway.leases.get_lease(token)[0])
+
+        real = client._transport
+        drops = {"n": 0}
+
+        def fail_disconnect(url, payload, headers, timeout):
+            if payload.get("params", {}).get("name") == "disconnect":
+                drops["n"] += 1
+                raise IncompleteRead(b"")
+            return real(url, payload, headers, timeout)
+
+        client._transport = fail_disconnect
+        result = client.disconnect()
+        self.assertEqual(result, {"disconnected": False})
+        self.assertEqual(drops["n"], 3)
+        self.assertEqual(client.connection, token)
+        self.assertEqual(load_connection_token(client.token_path), token)
+        self.assertIsNotNone(gateway.leases.get_lease(token)[0])
+        self.assertEqual(clock.sleeps, [0.5, 1.0])
+        print("LEASE three IncompleteReads left the saved token in place")
+
+        later = self.client("conn.txt", "later-model.txt")
+        self.assertIsNone(later.connection)
+        released = later.disconnect()
+        self.assertTrue(released.get("disconnected"))
+        self.assertIsNone(load_connection_token(client.token_path))
+        self.assertIsNone(gateway.leases.get_lease(token)[0])
+        print("LEASE a later disconnect of that same token released the lease")
 
 
 class ProxyLeaseTest(unittest.TestCase):

@@ -182,6 +182,11 @@ def load_connection_token(path):
     return line or None
 
 
+# Server said this token is already gone. Anything else (transport drop,
+# HTTP error, rate limit) is uncertain: the lease may still be held.
+_TOKEN_ALREADY_GONE = frozenset({"invalid_connection", "lease_expired"})
+
+
 def clear_connection_token(path, token):
     """Remove the file only when it still holds this token."""
     if not token or load_connection_token(path) != token:
@@ -521,15 +526,26 @@ class CowCraft:
             return {"disconnected": False}
         try:
             result = self._tool("disconnect", {"connection": token})
-        except CowCraftError:
+        except CowCraftError as exc:
+            if exc.code not in _TOKEN_ALREADY_GONE:
+                # IncompleteRead / RemoteDisconnected and any other uncertain
+                # failure must leave the saved token in place.
+                return {"disconnected": False}
             result = {"disconnected": False}
+        else:
+            if isinstance(result, dict) and result.get("disconnected") is False:
+                return result
         if self.connection == token:
             self.connection = None
         clear_connection_token(self.token_path, token)
         return result
 
     def release_saved_lease(self):
-        """Disconnect the persisted token when it is not the current one."""
+        """Disconnect the persisted token when it is not the current one.
+
+        Returns the token only after the file no longer holds it. A transport
+        failure leaves the file alone and returns None.
+        """
         target = token_to_disconnect_on_busy(
             load_connection_token(self.token_path),
             self.connection,
@@ -537,6 +553,8 @@ class CowCraft:
         if not target:
             return None
         self.disconnect(token=target)
+        if load_connection_token(self.token_path) == target:
+            return None
         return target
 
     def self_state(self):
