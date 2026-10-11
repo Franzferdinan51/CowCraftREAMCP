@@ -1,0 +1,39 @@
+# Credentials — never commit
+*.env
+.env
+*password*
+*secret*
+*token*
+credentials.json
+swarm_config.json
+
+# WoW game data — user-supplied, never commit
+Data/
+*.mpq
+*.MPQ
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build artifacts
+target/
+build/
+dist/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local state
+*.tmp
+/tmp/
+blackboard.json
+minta_blackboard.json
+
+# Large externals (clone separately, see README)
+# benilla/  -- git clone https://github.com/samwhosung/benilla
