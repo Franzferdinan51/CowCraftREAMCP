@@ -8,15 +8,15 @@ World of Warcraft through the gateway.
 ```
 Agent tick:
   SEE     CowCraftEnv.observe()  -> gateway observe -> text render
-  DECIDE  judge(state)           -> SystemOne shim /v1/systemone/decide
-  ACT     CowCraftEnv.act(choice) -> gateway action() -> CowCraft
+  DECIDE  judge(state)           -> advice plus a choice; advice is not required
+  ACT     CowCraftEnv.act(choice) -> move, listed spell, or loot window
 ```
 
 ## Files
 
 | File | What |
 |---|---|
-| `cowcraft_env.py` | SystemOne `Env` over the Minta gateway. Discrete action set (`move_north/south/east/west`, `attack`, `stop`, `interact`, `loot`, `wait`) translated to gateway `action()` calls. Renders gateway state as judge-readable text. |
+| `cowcraft_env.py` | SystemOne `Env` over the Minta gateway. Discrete actions (`move_north/south/east/west`, `attack`, `cast`, `stop`, `interact`, `loot`, `wait`) become gateway `action()` calls. `attack` and `cast` also cast one affordable spell the server listed. `loot` opens the corpse, takes listed slots and money, then closes. |
 | `judge.py` | `SystemOneShimJudge` (live shim HTTP) + `StubJudge` (offline heuristic). `make_judge()` prefers the shim, falls back to stub. `build_questions()` builds the action/stuck/progress question set. |
 | `minta_agent.py` | Single-agent runner. Uses SystemOne's `DecisionLoop` when the `systemone` package is importable, else a built-in See > Decide > Act loop with the same uncertainty gate. |
 | `swarm.py` | Multi-agent crew. One thread per agent, own gateway session/account, own model routing, shared file-backed blackboard for coordination. |
@@ -54,9 +54,13 @@ Each agent entry in the swarm config takes a `model` field, passed to the
 SystemOne shim's decide call (the shim owns its registry; unknown ids are
 ignored server-side). Example split:
 
-`d1-3b` and `d1-omni-600m` advise the main model what it could do and what it could use. The advice is not required. The main model chooses the action. A model that is not already loaded is not loaded.
+`d1-3b` and `d1-omni-600m` advise what the character could do and what it could use. The advice is not required. A model that is not already loaded is not loaded.
 
-Without the shim, every agent runs the stub judge (no model calls at all).
+`SystemOneShimJudge` posts once and returns `advice` (`text`, `required: false`, `do`, `use`) plus `action.choice`. `minta_agent.py` and `swarm.py` still execute that `action.choice`. `hermes-integration/bot_mode.py` does not: there the main model's reply is the only action, and missing advice does not block the tick.
+
+Without the shim, every agent on this path runs the stub judge (no model calls at all).
+
+Navigation reads are not in the discrete action list. Call them on the client when a move is stuck: `navigation_probe`, `path_preview` with `x`/`y`/`z`, `terrain_map`, and `observe_map`. They share the pacing in `cowcraft_mcp.py` and do not move the character. `face` takes a guid or an orientation, not both.
 
 ## Extending the action set
 

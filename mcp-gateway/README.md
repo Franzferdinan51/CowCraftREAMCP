@@ -59,13 +59,39 @@ Prefer `mcp_gateway.py` as the entry point — it selects the backend from
   instance (SOAP/RA console, native module, or headless-client farm), then
   `export BACKEND=live`.
 
+## Tools added for server 0.3.16
+
+The catalog is 15 tools. `resume` and `observe_map` are the additions.
+Action kinds added with them: `navigation_probe`, `path_preview`,
+`terrain_map`, `item_open`, `item_read_lore`, and `object_read_lore`.
+Call them through the proxy, or on the direct client in `cowcraft_mcp.py`.
+The repository README has copy-paste examples.
+
+| Call | How |
+|---|---|
+| `resume` | Same username, password, and `model_name` as the dropped session. Optional `character_guid`. Do not disconnect the old token first. The gateway result omits `connection`; the direct client returns it and saves it. |
+| `observe` | Optional `sections`, `events_ack`, `quest_id`, `spell_id`, `spell_offset`, `spell_limit`, `inventory_offset`, `inventory_limit`. |
+| `observe_map` | Local terrain image. Once every 5 seconds. Also uses the navigation slot. |
+| `navigation_probe`, `terrain_map` | Action kind only. Once per second, shared. They do not move the character. |
+| `path_preview` | Action kind plus finite `x`, `y`, and `z`. Same one-per-second slot. |
+| `face` | Exactly one of integer `guid` or finite `orientation`. |
+| `cast` | `spell_id` from the latest observe, plus `target_guid`, when power can pay the listed cost. |
+| `loot_open`, `loot_take`, `loot_money`, `loot_close` | Open by corpse guid, take integer slots, take money, close with the same guid. |
+| `attack_stop` | Break off combat. |
+
+`create_character` accepts race `1` (Human) or race `2` (Orc), and forwards
+appearance integers. `select_character` and `delete_character` take an
+integer guid. `delete_character` forwards `request_id` when you pass one.
+
 ## Protocol notes (from reverse engineering)
 
 - Single-shot HTTP POST per JSON-RPC message; plain JSON responses.
 - Auth is the `connection` token inside tool arguments, not HTTP headers.
-- Lease: 600s pre-auth, 120s in-world; `heartbeat`/`observe` renew it.
-- One lease per account (`account_busy` otherwise). Stale leases are
-  reaped after 5 min idle (CowCraft never reaps — we fixed that).
-- Rate limits: 1/sec observe+heartbeat, 20/sec actions, serial per account.
-- Agents cannot use chat, teleports, Player Tools, or instant levelling
-  (schema-enforced in `actions.py`).
+- `connect` returns the server's connection instructions. Follow that order: connect, login, characters, select, observe, act, disconnect.
+- Call `initialize` before `disconnect`, or the live lease is not released.
+- Lease: about 600s pre-auth, about 120s in-world; `heartbeat` and `observe` renew it.
+- One lease per account (`account_busy` otherwise). `account_busy` is not `rate_limited`. The client copies a saved token to `path.bak` before replacing it. That file has no password.
+- A dead lease (`invalid_connection`, `lease_expired`, `not_authenticated`) is what signs in again.
+- Rate limits, also enforced by the client: 1/sec observe+heartbeat, 20/sec actions, 1/sec shared by the three navigation reads, 1/5sec `observe_map`, 1/60sec login. The server text also allows five logins per account and twenty per IP each minute. Honor `retry_after_ms`. Calls per account are serial.
+- Agents cannot use chat, teleports, Player Tools, or instant levelling (schema-enforced in `actions.py`).
+- On `benchmark_selection_rejected`, do not retry that character.

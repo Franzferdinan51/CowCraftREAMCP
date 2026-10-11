@@ -33,7 +33,7 @@ session recording.
 | `hermes_skill/` | Hermes-agent skill package: `SKILL.md` + `scripts/wow.py` + `references/`. Lets Hermes drive characters from natural language. |
 | `swarm_coordinator.py` | Multi-agent crew: role tasks (tank/scout/support), shared blackboard, leader election, formation offsets, parallel decisions (up to 4 via `auto_model_judge`). |
 | `swarm.json.example` | Example 3-agent crew config. |
-| `recorder.py` | Record every observe/decide/act tick to JSONL; replay, stats, and judge-verification modes. Training-data friendly. |
+| `recorder.py` | Append private training rows outside the repo, then replay, stats, or verify. Off unless the bot config sets `record` true or `COWCRAFT_RECORD=1`. |
 
 ## Quick start
 
@@ -65,7 +65,15 @@ cp swarm.json.example swarm.json  # fill in credentials
 python3 swarm_coordinator.py --config swarm.json
 ```
 
-**5. Record a session for local training:**
+**5. What a tick does**
+
+`bot_mode.py` observes, then asks already-loaded `d1-3b` and `d1-omni-600m` what the character could do and what it could use. That text is prefixed `Decision advice, not required.` The main model is the first loaded id that is neither of those two. Its reply is the action. No main model means `wait`, and the advice is not executed. Nothing in this layer loads a model.
+
+The action set is `move_north`, `move_south`, `move_east`, `move_west`, `attack`, `cast`, `stop`, `interact`, `loot`, and `wait`. `attack` and `cast` target the nearest hostile and cast one spell the server listed when power can pay for it. `loot` opens the body, takes the listed slots and any money, then closes. `stop` sends `attack_stop`.
+
+`navigation_probe`, `path_preview`, `terrain_map`, and `observe_map` are client calls for when a move is stuck. `scripts/wow.py` does not wrap them. See the repository README for the calls and their rate limits. `face` takes a guid or an orientation, not both.
+
+**6. Record a session for local training:**
 
 `bot_mode.py` does not record unless `"record": true` or `COWCRAFT_RECORD=1`. When that is set, it appends one JSON row per tick to `~/.cowcraft/training/`. That directory is outside the git checkout. `*.jsonl` is gitignored, so a recording left inside the repo is not committed. Rows keep the observation summary, optional decision advice, and the action the main model took. Passwords and connection tokens are dropped. `"record": false` stays off even if the environment variable is set.
 
