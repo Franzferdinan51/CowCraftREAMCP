@@ -73,6 +73,16 @@ def default_client_factory(username):
     return CowCraft(url=UPSTREAM_URL, token_path=token_path, model_path=model_path)
 
 
+def preserved_upstream_error(exc):
+    """Keep the upstream code. account_busy is still not rate_limited."""
+    kind = classify_failure(getattr(exc, "code", None), exc)
+    if kind in ("account_busy", "rate_limited", "benchmark_selection_rejected"):
+        code = kind
+    else:
+        code = getattr(exc, "code", None) or "upstream_error"
+    return BackendError(code, str(exc)[:200])
+
+
 class _Session:
     """One upstream CowCraft session for one account."""
 
@@ -273,30 +283,34 @@ class CowCraftBackend(WoWBackend):
 
     # -- WoWBackend interface ------------------------------------------
     def register(self, username, password):
+        """Open a connection and register. Do not login first.
+
+        A missing account used to be signed in before register, so the
+        server answered invalid_credentials and the register tool was never
+        sent. username_taken is returned as username_taken. The connection
+        used only for register is released and is not kept as the login lease.
+        """
         s = self._session(username)
         with s.lock:
+            s.password = password
+            if not s.agent_label:
+                s.agent_label = username
             try:
-                self._ensure_connected(s, password)
-            except BackendError as e:
-                if e.code != "not_authenticated":
-                    raise
-                # register needs no prior login: use a bare client
-                game = self._client_factory(username)
-                try:
-                    game.connect(f"minta-proxy-reg-{username}")
-                    out = self._call_raw(game, "register",
-                                         lambda: game.register(username, password))
-                    return out
-                except CowCraftError as exc:
-                    raise BackendError("upstream_error", str(exc)[:200])
-            return self._call(s, "register",
-                              lambda: s.game.register(username, password))
+                s.game.connect(s.agent_label)
+                out = s.game.register(username, password)
+            except CowCraftError as exc:
+                self._release_register_connection(s)
+                raise preserved_upstream_error(exc)
+            self._release_register_connection(s)
+            return out
 
-    def _call_raw(self, game, op, fn):
-        try:
-            return fn()
-        except CowCraftError as exc:
-            raise BackendError("upstream_error", str(exc)[:200])
+    def _release_register_connection(self, s):
+        if s.game.connection:
+            try:
+                s.game.disconnect()
+            except Exception:
+                s.game.connection = None
+        s.connected = False
 
     def login(self, username, password, agent_label=None):
         """Sign in as the caller. agent_label is sent unchanged on connect."""

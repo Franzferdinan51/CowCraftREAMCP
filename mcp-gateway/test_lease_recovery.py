@@ -264,6 +264,108 @@ class LeaseRecoveryTest(unittest.TestCase):
 
 
 class ProxyLeaseTest(unittest.TestCase):
+    def test_proxy_register_does_not_login_and_keeps_username_taken(self):
+        secret = harness.fixture_secret()
+        with tempfile.TemporaryDirectory() as tmp:
+            backend, transport = self._proxy(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": "reg-token"}),
+                    harness.tool_result({"username": "nia"}),
+                    harness.tool_result({"disconnected": True}),
+                ],
+                os.path.join(tmp, "conn.txt"),
+                os.path.join(tmp, "model.txt"),
+            )
+            result = backend.register("nia", secret)
+            self.assertEqual(result["username"], "nia")
+            self.assertEqual(len(harness.named(transport.payloads, "register")), 1)
+            self.assertEqual(harness.named(transport.payloads, "login"), [])
+            sent = harness.named(transport.payloads, "register")[0]
+            self.assertEqual(sent["params"]["arguments"]["username"], "nia")
+            self.assertNotIn(secret, result.get("username", ""))
+            self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend, transport = self._proxy(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": "taken-token"}),
+                    harness.tool_result({
+                        "error": {
+                            "code": "username_taken",
+                            "message": "username already exists",
+                        },
+                    }),
+                    harness.tool_result({"disconnected": True}),
+                ],
+                os.path.join(tmp, "conn.txt"),
+                os.path.join(tmp, "model.txt"),
+            )
+            with self.assertRaises(BackendError) as caught:
+                backend.register("ada", secret)
+            self.assertEqual(caught.exception.code, "username_taken")
+            self.assertNotEqual(caught.exception.code, "upstream_error")
+            self.assertEqual(harness.named(transport.payloads, "login"), [])
+            self.assertEqual(len(harness.named(transport.payloads, "register")), 1)
+            self.assertNotIn(secret, caught.exception.message)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend, transport = self._proxy(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": "reg-token"}),
+                    harness.tool_result({"username": "ora"}),
+                    harness.tool_result({"disconnected": True}),
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": "login-token"}),
+                    harness.tool_result({
+                        "username": "ora",
+                        "state": "character_selection",
+                    }),
+                    harness.tool_result({
+                        "character": {
+                            "guid": 7,
+                            "name": "Oraborn",
+                            "race": 2,
+                            "class": 1,
+                            "level": 1,
+                        },
+                    }),
+                ],
+                os.path.join(tmp, "conn.txt"),
+                os.path.join(tmp, "model.txt"),
+            )
+            backend.register("ora", secret)
+            backend.login("ora", secret, agent_label="Label-A")
+            created = backend.create_character("ora", {
+                "name": "Oraborn",
+                "race": 2,
+                "class": 1,
+                "skin": 1,
+                "face": 2,
+                "hair_style": 0,
+                "hair_color": 0,
+                "facial_hair": 0,
+            })
+            self.assertEqual(created["character"]["guid"], 7)
+            names = [
+                item.get("params", {}).get("name")
+                for item in transport.payloads
+                if item.get("method") == "tools/call"
+            ]
+            ordered = [
+                name for name in names
+                if name in ("register", "login", "create_character")
+            ]
+            self.assertEqual(ordered, ["register", "login", "create_character"])
+            self.assertEqual(names.count("login"), 1)
+            body = harness.named(transport.payloads, "create_character")[0]
+            character = body["params"]["arguments"]["character"]
+            self.assertEqual(character["race"], 2)
+            self.assertEqual(character["skin"], 1)
+            self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+            print("PROXY register is sent before login and username_taken stays")
     def test_proxy_disconnects_persisted_token_not_the_new_one(self):
         secret = harness.fixture_secret()
         saved = "saved-lease-token"
