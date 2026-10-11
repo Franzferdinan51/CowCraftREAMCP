@@ -257,6 +257,37 @@ def backup_connection_token(path):
     return bak
 
 
+def park_saved_token(path, account=None):
+    """Copy this account's saved token aside and take it out of the active file.
+
+    Does not disconnect. The server lease stays held for a later process.
+    Another account's token is left in place. A .bak that already holds a
+    different token is left alone; this token is shelved beside it instead.
+    """
+    token = load_connection_token(path)
+    if not token:
+        return None
+    owner = load_connection_owner(path)
+    if owner and account and owner != account:
+        return None
+    bak = os.fspath(path) + ".bak"
+    existing = load_connection_token(bak)
+    if existing and existing != token:
+        # The .bak lease is already spoken for. Shelve this one beside it.
+        _atomic_write(os.fspath(path) + ".held", token + "\n")
+    else:
+        backup_connection_token(path)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    try:
+        os.remove(os.fspath(path) + ".owner")
+    except FileNotFoundError:
+        pass
+    return token
+
+
 def remember_connection_token(path, token, account=None):
     """Save this token. Copy a different saved token aside before replacing it.
 

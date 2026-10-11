@@ -8,11 +8,11 @@ the vendored cowcraft_mcp client.
 
 Resilience lives in cowcraft_mcp (one policy for this proxy and direct
 clients):
-- stale-lease cleanup disconnects the persisted token, never a token this
-  call is about to issue
+- a saved lease is copied to its .bak file and left held; login does not
+  disconnect that token. A later process releases the backup
 - transport retries: exponential backoff on IncompleteRead and
   RemoteDisconnected (three failures stop)
-- account_busy is not rate_limited: release the saved token, then wait
+- account_busy is not rate_limited: it does not start the login clock
 - login is sent at most once per 60 seconds; rate_limited honors
   retry_after_ms and waits longer than a transport retry
 - observe and heartbeat share one call per second
@@ -40,7 +40,7 @@ from cowcraft_mcp import (  # noqa: E402
     CowCraft,
     CowCraftError,
     account_state_paths,
-    backup_connection_token,
+    park_saved_token,
     classify_failure,
     transport_backoff_seconds,
 )
@@ -140,14 +140,10 @@ class CowCraftBackend(WoWBackend):
                                "reconnect cooldown; try again shortly")
         if not explicit_login:
             s.last_reconnect = time.time()
-        # Drop a persisted prior lease for this account only. Never disconnect
-        # the token connect() is about to issue, and never another account's.
+        # Park a saved lease in the .bak file. Do not disconnect it: a later
+        # process still has to release that token. Never touch another account.
         try:
-            s.game.release_saved_lease(account=s.username)
-            if s.game.unreleased_saved_token(s.username):
-                backup_connection_token(s.game.token_path)
-                raise BackendError(
-                    "upstream_error", "saved lease was not released")
+            park_saved_token(s.game.token_path, account=s.username)
             s.game.connect(s.agent_label or s.username)
             if not s.password:
                 raise BackendError("not_authenticated",
@@ -171,8 +167,8 @@ class CowCraftBackend(WoWBackend):
 
         A transport failure that still escapes the client waits on the shared
         backoff curve and is tried once more. account_busy is not retried
-        here and is not classified as rate_limited: the client already
-        released the persisted token when it was a different lease.
+        here and is not classified as rate_limited. A token parked in the
+        backup is not disconnected.
         """
         last_exc = None
         for attempt in range(2):

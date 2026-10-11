@@ -273,7 +273,6 @@ class ProxyLeaseTest(unittest.TestCase):
             model_path = os.path.join(tmp, "model.txt")
             save_connection_token(token_path, saved)
             transport = harness.FakeTransport([
-                harness.tool_result({"disconnected": True}),
                 harness.rpc_result({"protocolVersion": "2024-11-05"}),
                 harness.tool_result({"connection": issued}),
                 harness.tool_result({"username": "ada"}),
@@ -290,18 +289,14 @@ class ProxyLeaseTest(unittest.TestCase):
             backend = CowCraftBackend(client_factory=factory)
             result = backend.login("ada", secret)
             self.assertEqual(result["username"], "ada")
-            disconnected = harness.named(transport.payloads, "disconnect")
-            self.assertEqual(len(disconnected), 1)
-            self.assertEqual(
-                disconnected[0]["params"]["arguments"]["connection"],
-                saved,
-            )
-            self.assertNotEqual(
-                disconnected[0]["params"]["arguments"]["connection"],
-                issued,
-            )
+            self.assertEqual(harness.named(transport.payloads, "disconnect"), [])
+            self.assertEqual(load_connection_token(token_path + ".bak"), saved)
+            self.assertEqual(load_connection_token(token_path), issued)
+            with open(token_path + ".bak", encoding="utf-8") as handle:
+                text = handle.read()
+            self.assertNotIn(secret, text)
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
-            print("LEASE proxy disconnected the persisted token, not the new one")
+            print("PROXY login left the saved lease held in the backup")
 
     def test_proxy_account_busy_is_not_rate_limited(self):
         secret = harness.fixture_secret()
@@ -497,12 +492,6 @@ class ProxyLeaseTest(unittest.TestCase):
                     IncompleteRead(b""),
                     IncompleteRead(b""),
                     IncompleteRead(b""),
-                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
-                    harness.tool_result({"connection": "should-not-issue"}),
-                    harness.tool_result({
-                        "username": "ada",
-                        "state": "character_selection",
-                    }),
                 ],
                 token_path,
                 os.path.join(tmp, "model.txt"),
@@ -511,15 +500,16 @@ class ProxyLeaseTest(unittest.TestCase):
             with self.assertRaises(BackendError) as caught:
                 backend.login("ada", password)
             self.assertNotEqual(caught.exception.code, "rate_limited")
-            self.assertEqual(load_connection_token(token_path), saved)
+            self.assertEqual(load_connection_token(token_path + ".bak"), saved)
+            self.assertEqual(harness.named(transport.payloads, "disconnect"), [])
             self.assertEqual(harness.named(transport.payloads, "login"), [])
             self.assertEqual(harness.named(transport.payloads, "connect"), [])
-            with open(token_path, encoding="utf-8") as handle:
+            with open(token_path + ".bak", encoding="utf-8") as handle:
                 text = handle.read()
             self.assertNotIn(password, text)
             self.assertNotIn(password, caught.exception.message)
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
-        print("PROXY kept the saved token when disconnect did not land")
+        print("PROXY a failed connect left the parked lease undropped")
 
     def test_proxy_accounts_do_not_share_a_token_file(self):
         password = "m" * 12
@@ -575,7 +565,6 @@ class ProxyLeaseTest(unittest.TestCase):
             save_connection_token(token_path, saved)
             backend, transport = self._proxy(
                 [
-                    harness.tool_result({"disconnected": True}),
                     harness.rpc_result({"protocolVersion": "2024-11-05"}),
                     harness.tool_result({"connection": issued}),
                     harness.tool_result({
@@ -590,6 +579,7 @@ class ProxyLeaseTest(unittest.TestCase):
             self.assertEqual(result["username"], "ada")
             self.assertEqual(result["state"], "character_selection")
             self.assertEqual(load_connection_token(token_path), issued)
+            self.assertEqual(harness.named(transport.payloads, "disconnect"), [])
             backup = token_path + ".bak"
             self.assertEqual(load_connection_token(backup), saved)
             with open(backup, encoding="utf-8") as handle:
