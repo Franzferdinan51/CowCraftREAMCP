@@ -55,6 +55,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp-gateway"))
 from cowcraft_env import CowCraftEnv  # noqa: E402
 from auto_model_judge import AutoModelJudge, bounded_world_summary  # noqa: E402
 from cowcraft_mcp import account_state_paths  # noqa: E402
+from recorder import TickLogger, training_log_path  # noqa: E402
 
 VALID_ACTIONS = [
     "move_north", "move_south", "move_east", "move_west",
@@ -149,84 +150,105 @@ def run_bot(cfg):
                          args=(cfg["health_port"],), daemon=True).start()
 
     judge = AutoModelJudge()
+    training = None
+    if cfg.get("record") is not False and os.environ.get("COWCRAFT_RECORD", "1") != "0":
+        training = TickLogger(training_log_path(cfg.get("record_path")))
+        logger.info("training rows append to a private file outside the repo")
 
-    def make_env():
-        root = os.environ.get("MINTA_COWCRAFT_STATE", "/tmp/cowcraft-accounts")
-        token_path, model_path = account_state_paths(root, cfg["username"])
-        return CowCraftEnv(
-            gateway_url=cfg.get("gateway_url", "http://127.0.0.1:8901/mcp"),
-            username=cfg["username"],
-            password=cfg["password"],
-            character_name=cfg["name"],
-            char_class=cfg.get("char_class", 1),
-            role=cfg.get("role", "adventurer"),
-            model_name=cfg.get("model_name") or ("bot-" + cfg["name"]),
-            token_path=token_path,
-            model_path=model_path,
-        )
+    try:
+        def make_env():
+            root = os.environ.get("MINTA_COWCRAFT_STATE", "/tmp/cowcraft-accounts")
+            token_path, model_path = account_state_paths(root, cfg["username"])
+            return CowCraftEnv(
+                gateway_url=cfg.get("gateway_url", "http://127.0.0.1:8901/mcp"),
+                username=cfg["username"],
+                password=cfg["password"],
+                character_name=cfg["name"],
+                char_class=cfg.get("char_class", 1),
+                role=cfg.get("role", "adventurer"),
+                model_name=cfg.get("model_name") or ("bot-" + cfg["name"]),
+                token_path=token_path,
+                model_path=model_path,
+            )
 
-    env = connect_with_backoff(cfg, logger, make_env)
-    if env is None:
-        logger.info("shutdown before connect")
-        return 1
+        env = connect_with_backoff(cfg, logger, make_env)
+        if env is None:
+            logger.info("shutdown before connect")
+            return 1
 
-    tick = 0
-    max_ticks = int(cfg.get("max_ticks", 0))
-    tick_s = float(cfg.get("tick_seconds", 5))
-    memory = []
-    fail_streak = 0
-    last_action = None
+        tick = 0
+        max_ticks = int(cfg.get("max_ticks", 0))
+        tick_s = float(cfg.get("tick_seconds", 5))
+        memory = []
+        fail_streak = 0
+        last_action = None
 
-    while not _stop.is_set():
-        if max_ticks and tick >= max_ticks:
-            logger.info("max_ticks reached (%d)", max_ticks)
-            break
-        try:
-            obs = env.observe()
-            summary = bounded_world_summary(getattr(obs, "info", {}) or {})
-            answers = judge(summary, [{"id": "action"}])
-            main = answers.get("main") if isinstance(answers.get("main"), dict) else {}
-            action = main.get("choice") or answers.get("action", {}).get("choice", "wait")
-            conf = main.get("confidence", answers.get("action", {}).get("confidence", 0.0))
-            advice = answers.get("advice") if isinstance(answers.get("advice"), dict) else {}
-            if conf < 0.35 or action not in VALID_ACTIONS:
-                action = "wait"
-            if action == last_action:
-                fail_streak += 1
-                if fail_streak >= 2:
-                    action = "wait"
-                    fail_streak = 0
-            else:
-                fail_streak = 0
-            result = env.act(action)
-            last_action = action
-            memory.append(
-                f"tick {tick}: saw {obs.text.splitlines()[0][:70] if obs.text else '?'} "
-                f"| chose {action} ({conf:.2f}) | "
-                f"{'progressed' if result.progressed else 'no progress'}")
-            logger.info("tick %d: %s conf=%.2f %s advice=%s", tick, action, conf,
-                        "ok" if result.progressed else "--",
-                        "none" if not advice.get("text") else "optional")
-            _health.update(tick=tick, last_action=action, last_error=None,
-                           uptime_s=int(time.time() - started))
-            tick += 1
-            if obs.done or result.done:
-                logger.info("env signalled done")
+        while not _stop.is_set():
+            if max_ticks and tick >= max_ticks:
+                logger.info("max_ticks reached (%d)", max_ticks)
                 break
-        except Exception as e:
-            logger.warning("tick %d error: %s — reconnecting", tick, str(e)[:150])
-            _health["last_error"] = str(e)[:200]
             try:
-                env = connect_with_backoff(cfg, logger, make_env)
-                if env is None:
+                obs = env.observe()
+                summary = bounded_world_summary(getattr(obs, "info", {}) or {})
+                answers = judge(summary, [{"id": "action"}])
+                main = answers.get("main") if isinstance(answers.get("main"), dict) else {}
+                action = main.get("choice") or answers.get("action", {}).get("choice", "wait")
+                conf = main.get("confidence", answers.get("action", {}).get("confidence", 0.0))
+                advice = answers.get("advice") if isinstance(answers.get("advice"), dict) else {}
+                if conf < 0.35 or action not in VALID_ACTIONS:
+                    action = "wait"
+                if action == last_action:
+                    fail_streak += 1
+                    if fail_streak >= 2:
+                        action = "wait"
+                        fail_streak = 0
+                else:
+                    fail_streak = 0
+                result = env.act(action)
+                if training is not None:
+                    meta = answers.get("_meta") if isinstance(answers.get("_meta"), dict) else {}
+                    training.log({
+                        "type": "tick",
+                        "observe": summary[:600],
+                        "advice": advice.get("text"),
+                        "advice_required": False,
+                        "action": action,
+                        "confidence": conf,
+                        "model": meta.get("model"),
+                        "progressed": bool(result.progressed),
+                    })
+                    training.next_tick()
+                last_action = action
+                memory.append(
+                    f"tick {tick}: saw {obs.text.splitlines()[0][:70] if obs.text else '?'} "
+                    f"| chose {action} ({conf:.2f}) | "
+                    f"{'progressed' if result.progressed else 'no progress'}")
+                logger.info("tick %d: %s conf=%.2f %s advice=%s", tick, action, conf,
+                            "ok" if result.progressed else "--",
+                            "none" if not advice.get("text") else "optional")
+                _health.update(tick=tick, last_action=action, last_error=None,
+                               uptime_s=int(time.time() - started))
+                tick += 1
+                if obs.done or result.done:
+                    logger.info("env signalled done")
                     break
-            except Exception:
-                break
-        _stop.wait(tick_s)
+            except Exception as e:
+                logger.warning("tick %d error: %s — reconnecting", tick, str(e)[:150])
+                _health["last_error"] = str(e)[:200]
+                try:
+                    env = connect_with_backoff(cfg, logger, make_env)
+                    if env is None:
+                        break
+                except Exception:
+                    break
+            _stop.wait(tick_s)
 
-    _health["status"] = "stopped"
-    logger.info("bot stopped after %d ticks", tick)
-    return 0
+        _health["status"] = "stopped"
+        logger.info("bot stopped after %d ticks", tick)
+        return 0
+    finally:
+        if training is not None:
+            training.close()
 
 
 def main():

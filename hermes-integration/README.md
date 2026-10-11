@@ -65,18 +65,13 @@ cp swarm.json.example swarm.json  # fill in credentials
 python3 swarm_coordinator.py --config swarm.json
 ```
 
-**5. Record a session:**
+**5. Record a session for local training:**
 
-```python
-from recorder import TickLogger, RecordedEnv, record_decision
-log = TickLogger("session.jsonl")
-env = RecordedEnv(my_env, log)
-# ... run loop, calling record_decision(log, action, conf, model) each tick
-```
+`bot_mode.py` appends one JSON row per tick to `~/.cowcraft/training/`. That directory is outside the git checkout. `*.jsonl` is gitignored, so a recording left inside the repo is not committed. Set `"record": false` or `COWCRAFT_RECORD=0` to skip it. Rows keep the observation summary, optional decision advice, and the action the main model took. Passwords and connection tokens are dropped.
 
 ```bash
-python3 recorder.py stats --in session.jsonl
-python3 recorder.py replay --in session.jsonl --step
+python3 recorder.py stats --in ~/.cowcraft/training/cowcraft-YYYYMMDD.jsonl
+python3 recorder.py replay --in ~/.cowcraft/training/cowcraft-YYYYMMDD.jsonl --step
 ```
 
 ## Installing the skill in Hermes

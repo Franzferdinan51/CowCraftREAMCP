@@ -2,23 +2,15 @@
 """
 recorder.py — Record and replay CowCraft agent sessions.
 
-Record mode wraps a CowCraftEnv: every observe/decide/act tick is appended
-as one JSON line. Replay mode steps through a recording for debugging or
-as training data.
+bot_mode appends one private JSON row per tick under ~/.cowcraft/training/.
+That directory is outside the git checkout. Passwords and connection tokens
+are dropped before a row is written. Set record to false or COWCRAFT_RECORD=0
+to skip it. Replay and stats read that file locally.
 
 Usage:
-    # Record (wraps any env-compatible loop; simplest: use with bot_mode)
-    python3 recorder.py record --out session.jsonl -- python3 bot_mode.py --config bot.json
-    # ...but easiest is programmatic: see RecordedEnv below.
-
-    # Replay: print each tick
-    python3 recorder.py replay --in session.jsonl
-
-    # Replay: verify a judge reproduces the recorded actions
-    python3 recorder.py verify --in session.jsonl
-
-    # Stats
-    python3 recorder.py stats --in session.jsonl
+    python3 recorder.py replay --in ~/.cowcraft/training/cowcraft-YYYYMMDD.jsonl
+    python3 recorder.py stats --in ~/.cowcraft/training/cowcraft-YYYYMMDD.jsonl
+    python3 recorder.py verify --in ~/.cowcraft/training/cowcraft-YYYYMMDD.jsonl
 
 Format (one JSON object per line):
     {"tick": 0, "t": 1699999999.0, "type": "observe", "text": "..."}
@@ -35,22 +27,75 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "systemone-integration"))
 
 
+_SECRET_KEYS = {"password", "token", "connection", "authorization", "api_key"}
+_TOKEN = re.compile(r"[a-f0-9-]{36}\.[a-f0-9]{64}")
+
+
+def repo_root():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def outside_repo(path):
+    """True when path is not inside the CowCraft git checkout."""
+    root = repo_root()
+    target = os.path.abspath(path)
+    return target != root and not target.startswith(root + os.sep)
+
+
+def local_training_path():
+    """Private JSONL under the home directory. Never a path in the repo."""
+    root = os.path.expanduser("~/.cowcraft/training")
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    os.chmod(root, 0o700)
+    return os.path.join(root, "cowcraft-%s.jsonl" % time.strftime("%Y%m%d"))
+
+
+def sanitize_entry(entry):
+    """Drop secrets and connection tokens before a training row is written."""
+    if isinstance(entry, dict):
+        out = {}
+        for key, value in entry.items():
+            if str(key).lower() in _SECRET_KEYS:
+                continue
+            out[key] = sanitize_entry(value)
+        return out
+    if isinstance(entry, list):
+        return [sanitize_entry(value) for value in entry]
+    if isinstance(entry, str):
+        return _TOKEN.sub("[redacted]", entry)
+    return entry
+
+
+def training_log_path(requested=None):
+    """Use a private path. An in-repo request is redirected home."""
+    if requested and outside_repo(requested):
+        parent = os.path.dirname(os.path.abspath(requested))
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        return os.path.abspath(requested)
+    return local_training_path()
+
+
 class TickLogger:
-    """Append-only JSONL tick log."""
+    """Append-only JSONL tick log. The file is mode 0600."""
 
     def __init__(self, path):
         self.path = path
         self.tick = 0
         self._f = open(path, "a")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     def log(self, entry):
-        entry = dict(entry)
+        entry = sanitize_entry(entry)
         entry.setdefault("tick", self.tick)
         entry.setdefault("t", time.time())
         self._f.write(json.dumps(entry) + "\n")
@@ -60,7 +105,10 @@ class TickLogger:
         self.tick += 1
 
     def close(self):
-        self._f.close()
+        handle = self._f
+        self._f = None
+        if handle is not None and not handle.closed:
+            handle.close()
 
 
 class RecordedEnv:
@@ -105,6 +153,11 @@ def cmd_replay(args):
             elif t == "act":
                 print(f"[t{e['tick']}] ACT: {e['action']} "
                       f"{'ok' if e.get('progressed') else '--'}")
+            elif t == "tick":
+                print(f"[t{e['tick']}] TICK: {e.get('action')} "
+                      f"conf={float(e.get('confidence') or 0):.2f} "
+                      f"{'ok' if e.get('progressed') else '--'} "
+                      f"advice={'optional' if e.get('advice') else 'none'}")
             if args.step:
                 input("  <enter> for next tick...")
 
@@ -116,11 +169,11 @@ def cmd_stats(args):
         for line in f:
             e = json.loads(line)
             ticks.add(e.get("tick"))
-            if e.get("type") == "decide":
+            if e.get("type") in ("decide", "tick"):
                 actions[e.get("action")] = actions.get(e.get("action"), 0) + 1
                 if e.get("model"):
                     models.add(e["model"])
-            if e.get("type") == "act" and e.get("progressed"):
+            if e.get("type") in ("act", "tick") and e.get("progressed"):
                 progressed += 1
     print(f"ticks: {len(ticks)}")
     print(f"actions: {json.dumps(actions, indent=2)}")

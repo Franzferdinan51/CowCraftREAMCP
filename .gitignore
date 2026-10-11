@@ -29,11 +29,13 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Local state
+# Local state and private training rows. Never commit these.
 *.tmp
 /tmp/
 blackboard.json
 minta_blackboard.json
+*.jsonl
+training/
 
 # Large externals (clone separately, see README)
 # benilla/  -- git clone https://github.com/samwhosung/benilla
