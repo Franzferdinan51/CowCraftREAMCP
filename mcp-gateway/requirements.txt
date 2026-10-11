@@ -1,0 +1,2 @@
+# Minta MCP gateway — no third-party dependencies.
+# Python 3.9+ stdlib only (http.server, json, hmac, uuid, threading).
