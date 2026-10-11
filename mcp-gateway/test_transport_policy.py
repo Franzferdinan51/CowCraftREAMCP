@@ -17,6 +17,7 @@ os.environ["BACKEND"] = "stub"
 
 import harness  # noqa: E402
 from cowcraft_mcp import (  # noqa: E402
+    SENT_LOG_LIMIT,
     CowCraft,
     CowCraftError,
     account_busy_wait_seconds,
@@ -243,6 +244,18 @@ class TransportPolicyTest(unittest.TestCase):
             self.assertEqual(len(harness.named(transport.payloads, "login")), 2)
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
             print("TRANSPORT account_busy was not on the login-retry clock")
+
+    def test_sent_log_keeps_only_the_newest_payloads(self):
+        extra = 5
+        client, _transport, _clock = self._client(
+            [success_body()] * (SENT_LOG_LIMIT + extra)
+        )
+        for i in range(SENT_LOG_LIMIT + extra):
+            client._exchange({"jsonrpc": "2.0", "id": i, "method": "ping"})
+        self.assertEqual(len(client._sent), SENT_LOG_LIMIT)
+        self.assertEqual(client._sent[0]["id"], extra)
+        self.assertEqual(client._sent[-1]["id"], SENT_LOG_LIMIT + extra - 1)
+        print("TRANSPORT sent log stayed capped at %d payloads" % SENT_LOG_LIMIT)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ DEFAULT_MODEL_PATH = "/tmp/cowcraft_model.txt"
 LOGIN_MIN_INTERVAL_S = 60.0
 OBSERVE_MIN_INTERVAL_S = 1.0
 MAX_TRANSPORT_ATTEMPTS = 3
+SENT_LOG_LIMIT = 128
 
 # WoW vanilla class IDs
 CLASSES = {
@@ -388,6 +389,8 @@ class CowCraft:
         last_exc = None
         for attempt in range(attempts):
             self._sent.append(json.loads(json.dumps(payload)))
+            if len(self._sent) > SENT_LOG_LIMIT:
+                del self._sent[: len(self._sent) - SENT_LOG_LIMIT]
             try:
                 raw = self._transport(self.url, payload, headers, 30)
                 return self._parse_raw(raw)
