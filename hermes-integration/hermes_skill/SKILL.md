@@ -47,8 +47,8 @@ export MINTA_GATEWAY_URL=http://127.0.0.1:8901/mcp
 The gateway's `initialize` result includes `instructions`. Follow that order:
 
 1. `connect` with a stable `model_name` (the agent label). Reuse it for that character.
-2. `login` with this caller's username and password. At most one login per 60 seconds. The server also allows five logins per account and twenty per IP each minute; wait for `retry_after_ms`. A saved connection token for this account is resumed and is not disconnected. `account_busy` is not `rate_limited`: wait and try once, and leave a backup copy for a later process to release. After a dropped token, call `resume` with the same username, password, and `model_name`; the server replaces the connection.
-3. `characters`, then create or select a level-one Human (race 1) or Orc (race 2). `select_character` takes an integer guid. On `benchmark_selection_rejected`, do not retry that character. Select another, or create one and select that once.
+2. `register` when this username has not been registered from this client yet, then `login` once. At most one login per 60 seconds. The server also allows five logins per account and twenty per IP each minute; wait for `retry_after_ms`. A saved connection token for this account is resumed and is not disconnected. `account_busy` is not `rate_limited`: wait and try once, and leave a backup copy for a later process to release. After a dropped token, call `resume` with the same username, password, and `model_name`; the server replaces the connection.
+3. `characters`, then select an enterable character. If none can be entered, `create_character` makes a level-one Human (race 1) or Orc (race 2) and selects the returned integer guid. Other races are refused before the create is sent. Appearance integers `skin`, `face`, `hair_style`, `hair_color`, and `facial_hair` are forwarded. On `benchmark_selection_rejected`, do not retry that character.
 4. `observe`, then act. Observe and heartbeat share one call per second. `observe_map` is at most once every 5 seconds. `navigation_probe`, `path_preview`, and `terrain_map` share one call per second and do not move the character. Send `events_ack` only for events you have already processed. Confirm the action with a new observe. Attack casts a spell the server listed when power can pay for it. Loot opens the body, observes the ui section, takes the listed slots and any money, then closes.
 5. `disconnect` when finished.
 
@@ -59,6 +59,12 @@ The gateway's `initialize` result includes `instructions`. Follow that order:
 All examples use `scripts/wow.py` (in this skill's `scripts/` folder).
 
 ```bash
+# Register this account if it is new, then enter or create the character
+python3 scripts/wow.py account --character Quacksmash --race 1 --class 1
+
+# Create that character when the account has nobody to enter
+python3 scripts/wow.py character --character Quacksmash --race 2 --skin 1 --face 2
+
 # Where am I / what's around me
 python3 scripts/wow.py observe --character Quacksmash
 
@@ -92,6 +98,8 @@ Translate the user's intent into the discrete action set:
 | "loot it / pick it up" | `loot` |
 | "talk to him / use that / pick up quest" | `interact` |
 | "stop / hold / wait" | `stop` or `wait` |
+| "make my account / register" | `account` (register once if new, then one login) |
+| "make a character / create an orc" | `character` (race 1 or 2, then select the new integer guid) |
 | "what do you see / status" | `observe` (summarize: HP, position, nearby units/objects) |
 | "how much gold / check my stats" | `stats` (gold as Ng Ns Nc and total copper, plus level, hp, power, map, position) |
 

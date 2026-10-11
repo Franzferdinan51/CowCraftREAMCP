@@ -60,6 +60,8 @@ cd hermes-integration/hermes_skill
 export MINTA_USERNAME='your-account'
 export MINTA_PASSWORD='...'
 export MINTA_GATEWAY_URL=http://127.0.0.1:8901/mcp
+python3 scripts/wow.py account --character Yourchar --race 1 --class 1
+python3 scripts/wow.py character --character Yourchar --race 1 --skin 0 --face 0
 python3 scripts/wow.py observe --character Yourchar
 python3 scripts/wow.py stats --character Yourchar
 python3 scripts/wow.py move --character Yourchar --dir north --steps 2
@@ -244,11 +246,17 @@ python3 recorder.py replay --in ~/.cowcraft/training/cowcraft-YYYYMMDD.jsonl --s
 
 ## Characters
 
-`create_character` accepts Human race `1` and Orc race `2`. Other races are
-rejected locally and not sent. Appearance fields `skin`, `face`,
-`hair_style`, `hair_color`, and `facial_hair` are integers. The name is 2–12
-letters. `select_character` takes an integer guid. On
-`benchmark_selection_rejected`, do not retry that character.
+`wow.py account` and `bot_mode.py` register a username this client has not
+seen, then send one login. A later connect of that same account does not
+register again. `wow.py character` uses that same connect path.
+
+If no character on the account can be entered, the path creates a level-1
+character and selects the integer guid from the result. `create_character`
+accepts Human race `1` and Orc race `2`. Other races are rejected locally
+and not sent. Appearance fields `skin`, `face`, `hair_style`, `hair_color`,
+and `facial_hair` are integers. The name is 2–12 letters. Pass `race` and
+those fields in the bot config. On `benchmark_selection_rejected`, do not
+retry that character.
 
 First MCP entry marks the character agent-bound. Reuse the same `model_name`
 on later visits.

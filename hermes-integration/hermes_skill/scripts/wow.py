@@ -22,23 +22,53 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "systemone-integration"))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "systemone-integration"))
 
 from cowcraft_env import CowCraftEnv, format_self_stats  # noqa: E402
 
 
-def make_env(character):
+def make_env(character, args=None):
+    args = args or argparse.Namespace()
     return CowCraftEnv(
         gateway_url=os.environ.get("MINTA_GATEWAY_URL", "http://127.0.0.1:8901/mcp"),
         username=os.environ["MINTA_USERNAME"],
         password=os.environ["MINTA_PASSWORD"],
         character_name=character,
-        model_name="hermes-skill",
+        model_name=os.environ.get("MINTA_AGENT_LABEL", "hermes-skill"),
+        token_path=os.environ.get("MINTA_TOKEN_PATH"),
+        model_path=os.environ.get("MINTA_MODEL_PATH"),
+        char_class=getattr(args, "char_class", None) or int(os.environ.get("MINTA_CLASS", "1")),
+        race=getattr(args, "race", None) if getattr(args, "race", None) is not None else int(os.environ.get("MINTA_RACE", "1")),
+        gender=getattr(args, "gender", 0),
+        skin=getattr(args, "skin", 0),
+        face=getattr(args, "face", 0),
+        hair_style=getattr(args, "hair_style", 0),
+        hair_color=getattr(args, "hair_color", 0),
+        facial_hair=getattr(args, "facial_hair", 0),
     )
 
 
+def cmd_account(args):
+    """Register this caller's account when it is new, then enter the character."""
+    env = make_env(args.character, args)
+    env.connect()
+    print("account %s" % env.username)
+    print("character %s" % env.character_name)
+    env.close()
+
+
+def cmd_character(args):
+    """Create the named level-1 character when the account has none to enter."""
+    env = make_env(args.character, args)
+    env.connect()
+    print("account %s" % env.username)
+    print("character %s" % env.character_name)
+    env.close()
+
+
 def cmd_observe(args):
-    env = make_env(args.character)
+    env = make_env(args.character, args)
     env.connect()
     obs = env.observe()
     print(format_self_stats(obs.info))
@@ -46,14 +76,14 @@ def cmd_observe(args):
 
 
 def cmd_stats(args):
-    env = make_env(args.character)
+    env = make_env(args.character, args)
     env.connect()
     obs = env.observe()
     print(format_self_stats(obs.info))
 
 
 def cmd_move(args):
-    env = make_env(args.character)
+    env = make_env(args.character, args)
     env.connect()
     action = {"north": "move_north", "south": "move_south",
               "east": "move_east", "west": "move_west"}[args.dir]
@@ -67,7 +97,7 @@ def cmd_move(args):
 
 
 def cmd_simple(args, action):
-    env = make_env(args.character)
+    env = make_env(args.character, args)
     env.connect()
     result = env.act(action)
     obs = env.observe()
@@ -79,8 +109,18 @@ def cmd_simple(args, action):
 def main():
     ap = argparse.ArgumentParser(description="Drive a WoW character via the Minta gateway")
     ap.add_argument("--character", required=True, help="character name")
+    ap.add_argument("--race", type=int, default=None, help="1 Human or 2 Orc")
+    ap.add_argument("--class", dest="char_class", type=int, default=None, help="class id")
+    ap.add_argument("--gender", type=int, default=0)
+    ap.add_argument("--skin", type=int, default=0)
+    ap.add_argument("--face", type=int, default=0)
+    ap.add_argument("--hair-style", dest="hair_style", type=int, default=0)
+    ap.add_argument("--hair-color", dest="hair_color", type=int, default=0)
+    ap.add_argument("--facial-hair", dest="facial_hair", type=int, default=0)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    sub.add_parser("account", help="register this account if it is new, then enter")
+    sub.add_parser("character", help="create the named character when none can be entered")
     sub.add_parser("observe", help="print current observation")
     sub.add_parser("stats", help="print own gold, hp, power, and position")
 
@@ -95,7 +135,11 @@ def main():
     sub.add_parser("wait", help="do nothing this tick")
 
     args = ap.parse_args()
-    if args.cmd == "observe":
+    if args.cmd == "account":
+        cmd_account(args)
+    elif args.cmd == "character":
+        cmd_character(args)
+    elif args.cmd == "observe":
         cmd_observe(args)
     elif args.cmd == "stats":
         cmd_stats(args)

@@ -67,6 +67,8 @@ python3 swarm_coordinator.py --config swarm.json
 
 **5. What a tick does**
 
+`bot_mode.py` registers the username when this client has not seen it, sends one login, and creates a level-1 Human (race 1) or Orc (race 2) only when no character can be entered. Set `race` and the appearance integers in the bot config. Other races are refused before create is sent. The skill helper uses the same path: `scripts/wow.py account` and `scripts/wow.py character`.
+
 `bot_mode.py` observes, then asks already-loaded `d1-3b` and `d1-omni-600m` what the character could do and what it could use. That text is prefixed `Decision advice, not required.` The main model is the first loaded id that is neither of those two. Its reply is the action. No main model means `wait`, and the advice is not executed. Nothing in this layer loads a model.
 
 The action set is `move_north`, `move_south`, `move_east`, `move_west`, `attack`, `cast`, `stop`, `interact`, `loot`, `stats`, and `wait`. `attack` and `cast` target the nearest hostile and cast one spell the server listed when power can pay for it. `loot` opens the body, takes the listed slots and any money, then closes. `stop` sends `attack_stop`. `stats` stands still. Every tick's text already includes gold as `Ng Ns Nc (total copper)`, plus level, hp, power, map, and position.

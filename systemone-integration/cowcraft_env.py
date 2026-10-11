@@ -125,6 +125,64 @@ def as_int_money(value):
     return value
 
 
+def account_marker_path(token_path):
+    """Username-only file beside the lease. It never holds a password."""
+    return os.fspath(token_path) + ".account"
+
+
+def known_account(token_path, username):
+    """True when this client already registered or recognized the username."""
+    wanted = str(username or "").strip().lower()
+    if not wanted or not token_path:
+        return False
+    try:
+        with open(account_marker_path(token_path), encoding="utf-8") as handle:
+            text = handle.read().strip().lower()
+    except OSError:
+        return False
+    return text == wanted
+
+
+def remember_account(token_path, username):
+    """Record the username so a later connect does not register again."""
+    path = account_marker_path(token_path)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(str(username).strip() + "\n")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def should_register(known):
+    """A new account is registered before login. A known one is not."""
+    return not known
+
+
+def race_for_create(race):
+    """Human 1 or Orc 2. Any other race is refused before a create is sent."""
+    try:
+        number = int(race)
+    except (TypeError, ValueError):
+        number = 0
+    if number not in (1, 2):
+        raise CowCraftError(
+            "create_character: invalid_arguments: race must be 1 (Human) or 2 (Orc)",
+            code="invalid_arguments",
+        )
+    return number
+
+
+def appearance_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def as_int_stat(value):
     """Integer from a live stat field. None when the field is absent."""
     if isinstance(value, bool) or value is None:
@@ -269,6 +327,13 @@ class CowCraftEnv:
         model_name="minta-agent",
         token_path=None,
         model_path=None,
+        race=1,
+        gender=0,
+        skin=0,
+        face=0,
+        hair_style=0,
+        hair_color=0,
+        facial_hair=0,
     ):
         if CowCraft is None:
             raise RuntimeError("cowcraft_mcp client not importable")
@@ -286,6 +351,14 @@ class CowCraftEnv:
         self.char_class = char_class
         self.role = role
         self.model_name = model_name
+        self.race = race
+        self.gender = appearance_int(gender)
+        self.skin = appearance_int(skin)
+        self.face = appearance_int(face)
+        self.hair_style = appearance_int(hair_style)
+        self.hair_color = appearance_int(hair_color)
+        self.facial_hair = appearance_int(facial_hair)
+        self.entered_guid = None
 
         self.game = CowCraft(
             url=self.gateway_url,
@@ -300,25 +373,56 @@ class CowCraftEnv:
 
     # -- lifecycle -------------------------------------------------------
     def connect(self):
-        """connect, login once, then enter a character that accepts this label.
+        """Register a new account, login once, then enter or create a character.
 
+        Registration happens before login so a missing account does not burn
+        the 60-second login floor. A known account is not registered again.
         account_busy is tried once more after the client releases a saved
         lease. A benchmark_selection_rejected character is not selected again.
-        A missing character is created as a level-1 Human.
+        A character is created only when none on the account can be entered.
         """
         self.game.connect(self.model_name)
+        self._register_if_new()
         self._login_with_one_busy_retry()
         chars = self.game.characters().get("characters") or []
         if self._enter_existing(chars):
             self._refresh()
             self._load_spells()
             return True
-        created = self.game.create_character(self._creation_name(chars), self.char_class)
-        guid = created.get("guid") or (created.get("character") or {}).get("guid")
-        self.game.select_character(int(guid))
+        self._create_and_select(chars)
         self._refresh()
         self._load_spells()
         return True
+
+    def _register_if_new(self):
+        if not should_register(known_account(self.game.token_path, self.username)):
+            return
+        try:
+            self.game.register(self.username, self.password)
+        except CowCraftError as exc:
+            if getattr(exc, "code", None) != "username_taken":
+                raise
+        remember_account(self.game.token_path, self.username)
+
+    def _create_and_select(self, chars):
+        race = race_for_create(self.race)
+        created = self.game.create_character(
+            self._creation_name(chars),
+            self.char_class,
+            gender=self.gender,
+            race=race,
+            skin=self.skin,
+            face=self.face,
+            hair_style=self.hair_style,
+            hair_color=self.hair_color,
+            facial_hair=self.facial_hair,
+        )
+        guid = created.get("guid") if isinstance(created, dict) else None
+        if not isinstance(guid, int):
+            nested = created.get("character") if isinstance(created, dict) else None
+            guid = nested.get("guid") if isinstance(nested, dict) else None
+        self.entered_guid = guid
+        self.game.select_character(guid)
 
     def _login_with_one_busy_retry(self):
         try:
@@ -350,6 +454,7 @@ class CowCraftEnv:
         for guid in named + rest:
             try:
                 self.game.select_character(guid)
+                self.entered_guid = guid
                 return True
             except CowCraftError as exc:
                 if getattr(exc, "code", None) == "benchmark_selection_rejected":
