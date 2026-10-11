@@ -362,7 +362,7 @@ class CowCraft:
         return self._rpc("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": {"name": "juno", "version": "1.0"},
+            "clientInfo": {"name": "cowcraft-mcp", "version": "1.0"},
         })
 
     def list_tools(self):
@@ -377,6 +377,10 @@ class CowCraft:
 
     def connect(self, model_name=None):
         """Open a connection. Persist model_name and, if no lease is saved, the token.
+
+        model_name is the caller's agent label, not an account. Pass the
+        label for this user. Login takes that user's own username and
+        password and does not substitute another account.
 
         An existing token file is left alone. The new token is not written
         over the lease a previous process still holds.
@@ -407,7 +411,10 @@ class CowCraft:
         })
 
     def login(self, username, password):
-        """Sign in. At most one send per 60s.
+        """Sign in as the given account. At most one send per 60s.
+
+        Any username and password are sent as given. There is no built-in
+        account.
 
         account_busy releases the saved lease token when it is not the
         token this process just issued, then waits. It does not start the

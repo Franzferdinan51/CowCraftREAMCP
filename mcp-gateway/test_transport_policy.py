@@ -178,10 +178,28 @@ class TransportPolicyTest(unittest.TestCase):
                 token_path=os.path.join(tmp, "conn.txt"),
                 model_path=os.path.join(tmp, "model.txt"),
             )
-            token = client.connect("DuckBot")
+            token = client.connect("caller-model")
             self.assertEqual(token, "issued-token")
+            sent = harness.named(transport.payloads, "connect")[-1]
+            self.assertEqual(sent["params"]["arguments"]["model_name"], "caller-model")
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
         print("TRANSPORT structuredContent supplied the connection token")
+
+    def test_login_sends_whatever_username_the_caller_passes(self):
+        for username in ("ada", "bao"):
+            client, transport, _clock = self._client([
+                harness.tool_result({
+                    "username": username,
+                    "state": "character_selection",
+                }),
+            ])
+            client.connection = "held"
+            result = client.login(username, harness.fixture_secret())
+            sent = harness.named(transport.payloads, "login")[-1]
+            args = sent["params"]["arguments"]
+            self.assertEqual(args["username"], username)
+            self.assertEqual(result["username"], username)
+        print("TRANSPORT login sent each caller's username")
 
     def test_account_busy_is_not_on_the_login_clock(self):
         with tempfile.TemporaryDirectory() as tmp:
