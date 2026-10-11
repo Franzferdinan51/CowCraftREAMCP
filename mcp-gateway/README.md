@@ -31,9 +31,9 @@ Prefer `mcp_gateway.py` as the entry point — it selects the backend from
 | File | Purpose |
 |---|---|
 | `mcp_gateway.py` | Entry point: picks backend from `BACKEND`, launches server |
-| `gateway.py` | HTTP server, JSON-RPC dispatch, 13 tool handlers |
+| `gateway.py` | HTTP server, JSON-RPC dispatch, 15 tool handlers |
 | `tools.py` | MCP tool definitions (names, descriptions, input schemas) |
-| `actions.py` | 155 game-action catalog + per-kind validation |
+| `actions.py` | 161 game-action catalog + per-kind validation |
 | `leases.py` | Token crypto (UUIDv4.HMAC-SHA256), lease lifecycle, rate limits |
 | `backend.py` | `WoWBackend` abstract interface + `StubBackend` (in-memory fake world) |
 | `cowcraft_backend.py` | `CowCraftBackend`: proxies to the real cowcraft.world |

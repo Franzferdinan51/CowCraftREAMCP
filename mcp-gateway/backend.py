@@ -40,7 +40,7 @@ class WoWBackend:
     def create_character(self, username, character):
         raise NotImplementedError
 
-    def delete_character(self, username, guid, confirm_name):
+    def delete_character(self, username, guid, confirm_name, request_id=None):
         raise NotImplementedError
 
     # -- world ------------------------------------------------------
@@ -51,11 +51,21 @@ class WoWBackend:
     def leave_world(self, username):
         raise NotImplementedError
 
-    def observe(self, username, sections=None, spell_limit=None, spell_offset=None):
+    def observe(self, username, sections=None, spell_limit=None, spell_offset=None,
+                events_ack=None, quest_id=None, spell_id=None,
+                inventory_offset=None, inventory_limit=None):
         """Return bounded world-state snapshot dict."""
         raise NotImplementedError
 
-    def do_action(self, username, action):
+    def observe_map(self, username):
+        """Return a local terrain schematic, or a stub note."""
+        raise NotImplementedError
+
+    def resume_session(self, username, password, model_name, character_guid=None):
+        """Recover an upstream session. Must not return a connection token."""
+        raise NotImplementedError
+
+    def do_action(self, username, action, request_id=None):
         """Execute one validated game action. Returns result dict."""
         raise NotImplementedError
 
@@ -113,9 +123,9 @@ class StubBackend(WoWBackend):
         acct = self._acct(username)
         return {"characters": acct["characters"],
                 "creation_options": {
-                    "races": [1],
+                    "races": [1, 2],
                     "classes": [1, 2, 3, 4, 5, 7, 8, 9, 11],
-                    "note": "MCP agents can currently play Humans only (race=1)",
+                    "note": "Human (race 1) or Orc (race 2)",
                 }}
 
     def create_character(self, username, character):
@@ -124,21 +134,22 @@ class StubBackend(WoWBackend):
         if not (2 <= len(name) <= 12) or not name.isalpha():
             raise BackendError("invalid_arguments",
                                "name must be 2-12 letters")
-        if character.get("race") != 1:
+        race = character.get("race", 1)
+        if race not in (1, 2):
             raise BackendError("invalid_arguments",
-                               "MCP agents can currently play Humans only")
+                               "race must be 1 (Human) or 2 (Orc)")
         for c in acct["characters"]:
             if c["name"].lower() == name.lower():
                 raise BackendError("name_taken", "character name taken")
         guid = self._next_guid
         self._next_guid += 1
         char = {"guid": guid, "name": name,
-                "race": 1, "class": character.get("class", 1),
+                "race": race, "class": character.get("class", 1),
                 "level": 1, "agent_bound": True}
         acct["characters"].append(char)
         return {"character": char}
 
-    def delete_character(self, username, guid, confirm_name):
+    def delete_character(self, username, guid, confirm_name, request_id=None):
         acct = self._acct(username)
         for i, c in enumerate(acct["characters"]):
             if c["guid"] == guid:
@@ -168,7 +179,9 @@ class StubBackend(WoWBackend):
         self.sessions.pop(username.lower(), None)
         return {}
 
-    def observe(self, username, sections=None, spell_limit=None, spell_offset=None):
+    def observe(self, username, sections=None, spell_limit=None, spell_offset=None,
+                events_ack=None, quest_id=None, spell_id=None,
+                inventory_offset=None, inventory_limit=None):
         sess = self.sessions.get(username.lower())
         if sess is None:
             raise BackendError("not_in_world", "no character in world")
@@ -187,9 +200,23 @@ class StubBackend(WoWBackend):
             "combat_ui": {"in_combat": False},
             "stub": True,
             "stub_note": "wire a real CMaNGOS backend for live world state",
+            "events_ack": events_ack,
         }
 
-    def do_action(self, username, action):
+    def observe_map(self, username):
+        if username.lower() not in self.sessions:
+            raise BackendError("not_in_world", "no character in world")
+        return {"stub": True, "mimeType": "image/png"}
+
+    def resume_session(self, username, password, model_name, character_guid=None):
+        acct = self._check_pw(username, password)
+        body = {"username": acct["username"], "resumed": False,
+                "model_name": model_name}
+        if character_guid is not None:
+            body["character_guid"] = character_guid
+        return body
+
+    def do_action(self, username, action, request_id=None):
         sess = self.sessions.get(username.lower())
         if sess is None:
             raise BackendError("not_in_world", "no character in world")
@@ -207,8 +234,11 @@ class StubBackend(WoWBackend):
             sess["hp"] = 1
             return {"released": True, "stub": True}
         # Everything else: acknowledge as stubbed
-        return {"ok": True, "kind": kind, "stub": True,
+        body = {"ok": True, "kind": kind, "stub": True,
                 "stub_note": "wire a real CMaNGOS backend to execute"}
+        if request_id:
+            body["request_id"] = request_id
+        return body
 
     def list_actions(self, username, family=None, kind=None):
         from actions import action_names

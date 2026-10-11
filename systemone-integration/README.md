@@ -64,7 +64,7 @@ Without the shim, every agent runs the stub judge (no model calls at all).
 The judge picks from `ACTIONS` in `cowcraft_env.py`. To add e.g. `follow`
 or `cast_frostbolt`, add the name to `ACTIONS` and a branch in
 `CowCraftEnv._dispatch()` mapping it to gateway `action()` calls. The
-gateway validates against its 155 capabilities; unknown kinds are rejected
+gateway validates against its 161 capabilities; unknown kinds are rejected
 with a clear error.
 
 ## Credentials

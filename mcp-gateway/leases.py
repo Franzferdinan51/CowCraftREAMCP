@@ -44,6 +44,8 @@ class Lease:
         # Rate-limit bookkeeping
         self._obs_timestamps = []    # observe/heartbeat calls (1/sec budget)
         self._action_timestamps = [] # action calls (20/sec budget)
+        self._nav_timestamps = []    # navigation reads (1/sec, not observe)
+        self._map_at = 0.0           # observe_map (5 seconds)
         self._lock = threading.Lock()
 
     def touch(self):
@@ -84,6 +86,32 @@ class Lease:
                 return max(wait_ms, 1)
             self._action_timestamps.append(now)
             return 0
+
+    def check_nav_budget(self):
+        """1/sec shared by navigation reads and observe_map."""
+        now = time.time()
+        with self._lock:
+            self._nav_timestamps = [t for t in self._nav_timestamps if now - t < 1.0]
+            if self._nav_timestamps:
+                oldest = min(self._nav_timestamps)
+                wait_ms = int((1.0 - (now - oldest)) * 1000) + 1
+                return max(wait_ms, 1)
+            self._nav_timestamps.append(now)
+            return 0
+
+    def check_map_budget(self):
+        """observe_map at most once every 5 seconds. Also uses the nav slot."""
+        now = time.time()
+        with self._lock:
+            if self._map_at and now - self._map_at < 5.0:
+                wait_ms = int((5.0 - (now - self._map_at)) * 1000) + 1
+                return max(wait_ms, 1)
+        wait_ms = self.check_nav_budget()
+        if wait_ms:
+            return wait_ms
+        with self._lock:
+            self._map_at = time.time()
+        return 0
 
 
 class LeaseManager:

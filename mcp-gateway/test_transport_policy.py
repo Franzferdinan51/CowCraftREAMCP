@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["BACKEND"] = "stub"
 
 import harness  # noqa: E402
+from actions import validate_action  # noqa: E402
 from cowcraft_mcp import (  # noqa: E402
     SENT_LOG_LIMIT,
     CowCraft,
@@ -274,6 +275,99 @@ class TransportPolicyTest(unittest.TestCase):
             self.assertEqual(load_connection_token(token_path + ".bak"), "saved-lease-token")
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
             print("TRANSPORT account_busy left the backed-up lease held")
+
+    def test_v0316_navigation_and_resume_match_the_server(self):
+        ok, _msg = validate_action({"kind": "navigation_probe"})
+        self.assertTrue(ok)
+        ok, msg = validate_action({"kind": "path_preview", "x": 1, "y": 2})
+        self.assertFalse(ok)
+        self.assertIn("z", msg)
+        ok, _msg = validate_action({"kind": "path_preview", "x": 1, "y": 2, "z": 3})
+        self.assertTrue(ok)
+        ok, _msg = validate_action({"kind": "terrain_map"})
+        self.assertTrue(ok)
+        ok, _msg = validate_action({"kind": "face", "guid": "5020"})
+        self.assertTrue(ok)
+        ok, msg = validate_action({"kind": "face", "guid": "5020", "orientation": 1.5})
+        self.assertFalse(ok)
+        self.assertIn("exactly one", msg)
+        ok, _msg = validate_action({
+            "kind": "item_open", "bag": 0, "slot": 1,
+        })
+        self.assertTrue(ok)
+        print("SCHEMA new 0.3.16 actions match the live required fields")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = os.path.join(tmp, "conn.txt")
+            model_path = os.path.join(tmp, "model.txt")
+            save_connection_token(token_path, "old-lease-token")
+            client, transport, _clock = self._client(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({
+                        "connection": "replacement-token",
+                        "resumed": True,
+                        "username": "ada",
+                    }),
+                ],
+                token_path=token_path,
+                model_path=model_path,
+            )
+            result = client.resume("ada", harness.fixture_secret(), "ada")
+            self.assertIs(result.get("resumed"), True)
+            self.assertEqual(result.get("connection"), "replacement-token")
+            self.assertEqual(load_connection_token(token_path), "replacement-token")
+            self.assertEqual(load_connection_token(token_path + ".bak"), "old-lease-token")
+            self.assertEqual(harness.named(transport.payloads, "disconnect"), [])
+            sent = harness.named(transport.payloads, "resume")[-1]
+            self.assertEqual(sent["params"]["arguments"]["model_name"], "ada")
+            self.assertEqual(
+                sent["params"]["arguments"]["connection"], "old-lease-token")
+            self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+            print("SCHEMA resume replaced the token and left the old lease undropped")
+
+        client, transport, clock = self._client([
+            harness.tool_result({"ok": True}),
+            harness.tool_result({"self": {"name": "Ada"}}),
+            harness.tool_result({"route": []}),
+        ])
+        client.connection = "held"
+        client.action("navigation_probe")
+        client.observe()
+        client.action("path_preview", {"x": 1, "y": 2, "z": 3})
+        self.assertEqual(clock.sleeps, [1.0])
+        self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+        print("SCHEMA navigation reads stayed at one per second apart from observe")
+
+        client, transport, clock = self._client([
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"content": [{
+                    "type": "image",
+                    "mimeType": "image/png",
+                    "data": "abc",
+                }]},
+            }),
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"content": [{
+                    "type": "image",
+                    "mimeType": "image/png",
+                    "data": "def",
+                }]},
+            }),
+        ])
+        client.connection = "held"
+        first = client.observe_map()
+        second = client.observe_map()
+        self.assertEqual(first["mimeType"], "image/png")
+        self.assertEqual(first["image"], "abc")
+        self.assertEqual(second["image"], "def")
+        self.assertGreaterEqual(sum(clock.sleeps), 5.0)
+        self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+        print("SCHEMA observe_map waited five seconds and kept the image")
 
     def test_sent_log_keeps_only_the_newest_payloads(self):
         extra = 5

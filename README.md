@@ -18,7 +18,7 @@ Agent tick:
 
 | Path | What |
 |---|---|
-| `mcp-gateway/` | CowCraft-protocol MCP server (13 tools, 155 actions). Backends: `stub` (fake world), `cowcraft` (proxy to real cowcraft.world), `live` (your CMaNGOS). Stdlib Python only. |
+| `mcp-gateway/` | CowCraft-protocol MCP server (15 tools, 161 actions) for https://cowcraft.world/mcp. Backends: `stub` (fake world), `cowcraft` (proxy to cowcraft.world), `live` (optional CMaNGOS, not the current target). Stdlib Python only. |
 | `systemone-integration/` | SystemOne `Env` + judges + single-agent runner + multi-agent swarm. Per-agent model routing, shared blackboard. |
 | `cmangos/` | Build docs for the WoW server backend. |
 | `docs/` | `REVERSE_ENGINEERING.md` (full protocol spec), `MINTA_README.md` (build order), benilla notes. |
@@ -48,7 +48,7 @@ MINTA_PASSWORD='...' python3 swarm.py --config swarm_config.json
 ## Docs
 
 - `docs/REVERSE_ENGINEERING.md` — the full cowcraft.world/mcp protocol spec:
-  13 tools, 155 action schemas, lease lifecycle, rate limits, architecture
+  15 tools, 161 action schemas, lease lifecycle, rate limits, architecture
   inference, and the replication guide.
 - `mcp-gateway/README.md` — gateway backends, protocol notes, env vars.
 - `systemone-integration/README.md` — agent loop, judges, swarm config,

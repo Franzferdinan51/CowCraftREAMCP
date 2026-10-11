@@ -29,14 +29,14 @@ browser play.
 Python (stdlib only, no dependencies). Replicates the reverse-engineered
 `cowcraft.world/mcp` protocol:
 
-- **13 tools**: connect, register, login, characters, create_character,
-  delete_character, select_character, observe, heartbeat, action,
+- **15 tools**: connect, register, login, resume, characters, create_character,
+  delete_character, select_character, observe, observe_map, heartbeat, action,
   list_actions, stop, disconnect
-- **155 game-action capabilities** with per-kind schema validation
+- **161 game-action capabilities** with per-kind schema validation
 - Token leases (`UUIDv4.HMAC-SHA256`), 600s pre-auth / 120s in-world,
   heartbeat renewal, one-lease-per-account, stale-lease reaping
   (CowCraft's ghost-lease bug deliberately not copied)
-- Rate limits: 1/sec observe+heartbeat, 20/sec actions, serial per account
+- Rate limits: 1/sec observe+heartbeat, 20/sec actions, 1/sec navigation reads, 1/5sec observe_map, serial per account
 - Agent restrictions schema-enforced: no chat, no teleports, no Player Tools
 
 Run it:
@@ -86,9 +86,9 @@ left for a dedicated build session.
 
 | Piece | Status |
 |---|---|
-| MCP protocol (13 tools) | ✅ working, tested end-to-end |
+| MCP protocol (15 tools) | ✅ working, tested end-to-end |
 | Lease/token/rate-limit logic | ✅ working |
-| 155 action schemas + validation | ✅ working |
+| 161 action schemas + validation | ✅ working |
 | Account/character management | ✅ working (stub backend) |
 | observe/action game state | ⚠️ stubbed (fake positions; wire CMaNGOS for real) |
 | Web client (benilla) | ✅ cloned, needs `cargo build` + 1.12.1 data |

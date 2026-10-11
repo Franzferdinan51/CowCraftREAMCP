@@ -35,8 +35,14 @@ DEFAULT_MODEL_PATH = "/tmp/cowcraft_model.txt"
 
 LOGIN_MIN_INTERVAL_S = 60.0
 OBSERVE_MIN_INTERVAL_S = 1.0
+MAP_MIN_INTERVAL_S = 5.0
+NAV_READ_INTERVAL_S = 1.0
+NAV_READ_KINDS = frozenset({
+    "navigation_probe", "path_preview", "terrain_map",
+})
 MAX_TRANSPORT_ATTEMPTS = 3
 SENT_LOG_LIMIT = 128
+ALLOWED_RACES = {1: "Human", 2: "Orc"}
 
 # WoW vanilla class IDs
 CLASSES = {
@@ -44,8 +50,8 @@ CLASSES = {
     5: "Priest", 7: "Shaman", 8: "Mage", 9: "Warlock", 11: "Druid",
 }
 
-# WoW vanilla race IDs (MCP currently supports Human=1 only)
-RACES = {1: "Human"}
+# CowCraft MCP races: Human/Alliance 1 and Orc/Horde 2.
+RACES = ALLOWED_RACES
 
 _HEADERS = {
     "Content-Type": "application/json",
@@ -340,6 +346,8 @@ class CowCraft:
         self._msg_id = 0
         self._last_login_at = None
         self._next_observe_at = 0.0
+        self._next_map_at = 0.0
+        self._next_nav_at = 0.0
         self._benchmark_rejected = set()
         self._sent = []
         self._rpc_lock = threading.RLock()
@@ -411,11 +419,21 @@ class CowCraft:
             code="transport",
         )
 
-    def _acquire_observe_slot(self):
-        wait = observe_slot_wait(self._clock(), self._next_observe_at)
+    def _acquire_slot(self, attr, interval):
+        wait = observe_slot_wait(self._clock(), getattr(self, attr), interval)
         if wait > 0:
             self._sleep(wait)
-        self._next_observe_at = self._clock() + OBSERVE_MIN_INTERVAL_S
+        setattr(self, attr, self._clock() + interval)
+
+    def _acquire_observe_slot(self):
+        self._acquire_slot("_next_observe_at", OBSERVE_MIN_INTERVAL_S)
+
+    def _action_kind(self, params):
+        arguments = params.get("arguments") or {}
+        action = arguments.get("action") or {}
+        if isinstance(action, dict):
+            return action.get("kind")
+        return None
 
     def _rpc(self, method, params=None):
         params = params or {}
@@ -423,6 +441,12 @@ class CowCraft:
         with self._rpc_lock:
             if tool_name in ("observe", "heartbeat"):
                 self._acquire_observe_slot()
+            elif tool_name == "observe_map":
+                # Map is once per 5s and also consumes the 1/s navigation read.
+                self._acquire_slot("_next_nav_at", NAV_READ_INTERVAL_S)
+                self._acquire_slot("_next_map_at", MAP_MIN_INTERVAL_S)
+            elif tool_name == "action" and self._action_kind(params) in NAV_READ_KINDS:
+                self._acquire_slot("_next_nav_at", NAV_READ_INTERVAL_S)
             self._msg_id += 1
             payload = {
                 "jsonrpc": "2.0",
@@ -441,7 +465,13 @@ class CowCraft:
         content = (result or {}).get("content") or [{}]
         text = "{}"
         if content and isinstance(content[0], dict):
-            text = content[0].get("text", "{}")
+            part = content[0]
+            if part.get("type") == "image":
+                return {
+                    "mimeType": part.get("mimeType") or "image/png",
+                    "image": part.get("data") or "",
+                }
+            text = part.get("text", "{}")
         if isinstance(text, dict):
             return text
         try:
@@ -565,37 +595,47 @@ class CowCraft:
         self._need_conn()
         return self._tool("characters", {"connection": self.connection})
 
-    def create_character(self, name, char_class=1, gender=0, race=1):
-        """Create a level-1 Human. A non-Human race is not sent."""
+    def create_character(self, name, char_class=1, gender=0, race=1,
+                         skin=0, face=0, hair_style=0, hair_color=0,
+                         facial_hair=0):
+        """Create a level-1 Human (race 1) or Orc (race 2). Other races are not sent."""
         self._need_conn()
-        if race != 1:
+        try:
+            race = int(race)
+        except (TypeError, ValueError):
+            race = 0
+        if race not in ALLOWED_RACES:
             raise CowCraftError(
-                "create_character: humans_only: MCP agents can currently play Humans only",
-                code="humans_only",
+                "create_character: invalid_arguments: race must be 1 (Human) or 2 (Orc)",
+                code="invalid_arguments",
             )
         return self._tool("create_character", {
             "connection": self.connection,
             "character": {
                 "name": name,
-                "race": 1,
+                "race": race,
                 "class": char_class,
-                "gender": gender,
-                "skin": 0,
-                "face": 0,
-                "hair_style": 0,
-                "hair_color": 0,
-                "facial_hair": 0,
+                "gender": int(gender),
+                "skin": int(skin),
+                "face": int(face),
+                "hair_style": int(hair_style),
+                "hair_color": int(hair_color),
+                "facial_hair": int(facial_hair),
             },
         })
 
-    def delete_character(self, guid, confirm_name):
+    def delete_character(self, guid, confirm_name, request_id=None):
         self._need_conn()
         guid = require_int_guid(guid)
-        return self._tool("delete_character", {
+        args = {
             "connection": self.connection,
             "guid": guid,
             "confirm_name": confirm_name,
-        })
+        }
+        # Keep the caller's id. A new id would repeat an uncertain deletion.
+        if request_id:
+            args["request_id"] = str(request_id)
+        return self._tool("delete_character", args)
 
     def select_character(self, guid):
         """Enter the world. A string guid is rejected locally.
@@ -619,7 +659,9 @@ class CowCraft:
                 self._benchmark_rejected.add(guid)
             raise
 
-    def observe(self, sections=None, spell_limit=None, spell_offset=None):
+    def observe(self, sections=None, spell_limit=None, spell_offset=None,
+                events_ack=None, quest_id=None, spell_id=None,
+                inventory_offset=None, inventory_limit=None):
         self._need_conn()
         args = {"connection": self.connection}
         if sections:
@@ -628,25 +670,71 @@ class CowCraft:
             args["spell_limit"] = int(spell_limit)
         if spell_offset is not None:
             args["spell_offset"] = int(spell_offset)
+        if events_ack is not None:
+            args["events_ack"] = str(events_ack)
+        if quest_id is not None:
+            args["quest_id"] = int(quest_id)
+        if spell_id is not None:
+            args["spell_id"] = int(spell_id)
+        if inventory_offset is not None:
+            args["inventory_offset"] = int(inventory_offset)
+        if inventory_limit is not None:
+            args["inventory_limit"] = int(inventory_limit)
         return self._tool("observe", args)
+
+    def observe_map(self):
+        """Local terrain schematic. At most once every 5 seconds."""
+        self._need_conn()
+        return self._tool("observe_map", {"connection": self.connection})
+
+    def resume(self, username, password, model_name, character_guid=None):
+        """Recover a session. The server replaces the previous connection token.
+
+        The old token is copied aside and not disconnected here. The server
+        stops accepting it when resume succeeds.
+        """
+        self.initialize()
+        args = {
+            "username": username,
+            "password": password,
+            "model_name": model_name,
+        }
+        saved = self.connection or load_connection_token(self.token_path)
+        if saved:
+            args["connection"] = saved
+            self.connection = saved
+        if character_guid is not None:
+            args["character_guid"] = int(character_guid)
+        result = self._tool("resume", args)
+        new_token = result.get("connection") if isinstance(result, dict) else None
+        if new_token:
+            remember_connection_token(
+                self.token_path, new_token, account=username)
+            self.connection = new_token
+        return result
 
     def heartbeat(self):
         self._need_conn()
         return self._tool("heartbeat", {"connection": self.connection})
 
-    def action(self, action_name, params=None):
+    def action(self, action_name, params=None, request_id=None):
         self._need_conn()
         act = {"kind": action_name}
         if params:
             act.update(params)
-        return self._tool("action", {
-            "connection": self.connection,
-            "action": act,
-        })
+        args = {"connection": self.connection, "action": act}
+        if request_id:
+            args["request_id"] = str(request_id)
+        return self._tool("action", args)
 
-    def list_actions(self):
+    def list_actions(self, family=None, kind=None):
         self._need_conn()
-        return self._tool("list_actions", {"connection": self.connection})
+        args = {"connection": self.connection}
+        if family:
+            args["family"] = family
+        if kind:
+            args["kind"] = kind
+        return self._tool("list_actions", args)
 
     def stop(self):
         self._need_conn()

@@ -1,7 +1,7 @@
 """
 MCP tool definitions for the Minta gateway.
 
-13 tools, mirroring CowCraft's tools/list. Each entry: name, description,
+15 tools, mirroring CowCraft's tools/list (server 0.3.16). Each entry: name, description,
 inputSchema (JSON Schema). The gateway in gateway.py dispatches on these.
 """
 
@@ -30,8 +30,8 @@ TOOLS = [
         "name": "register",
         "description": (
             "Create a new player account. No email, recovery or guest "
-            "claiming. Credentials stay private. Requires an active "
-            "connection lease."
+            "claiming. Credentials stay private. Five attempts per IP "
+            "per five minutes. Requires an active connection lease."
         ),
         "inputSchema": {
             "type": "object",
@@ -50,10 +50,11 @@ TOOLS = [
         "description": (
             "Step 2. Sign in as the caller. Any username and password are sent "
             "as given. One lease per account, and at most one login per 60 "
-            "seconds. account_busy is not rate_limited. A saved token for this "
-            "account is resumed and left held; a later process releases only "
-            "the backup. If login is still busy, wait and try once. On rate_limited, wait for "
-            "retry_after_ms. Never busy-loop."
+            "seconds. The server also allows five logins per account and twenty "
+            "per IP each minute; honor retry_after_ms. account_busy is not "
+            "rate_limited. A saved token for this account is resumed and left "
+            "held; a later process releases only the backup. If login is still "
+            "busy, wait and try once. Never busy-loop."
         ),
         "inputSchema": {
             "type": "object",
@@ -63,6 +64,28 @@ TOOLS = [
                 "password": {"type": "string"},
             },
             "required": ["connection", "username", "password"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "resume",
+        "description": (
+            "Recover this account after a dropped token or gateway restart. "
+            "Send the same username, password, and exact model_name. The "
+            "server returns a replacement connection and stops accepting the "
+            "previous token. Optional character_guid enters only that "
+            "character. Do not disconnect the old token first."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "connection": {"type": "string"},
+                "username": {"type": "string"},
+                "password": {"type": "string"},
+                "model_name": {"type": "string"},
+                "character_guid": {"type": "integer"},
+            },
+            "required": ["username", "password", "model_name"],
             "additionalProperties": False,
         },
     },
@@ -80,7 +103,8 @@ TOOLS = [
         "name": "create_character",
         "description": (
             "Create a level-1 character. MCP agents can currently play "
-            "Humans only (race=1). Name must be 2-12 letters and unique."
+            "Level-one Human (race 1) or Orc (race 2) only. "
+            "Name must be 2-12 letters and unique."
         ),
         "inputSchema": {
             "type": "object",
@@ -153,7 +177,7 @@ TOOLS = [
             "properties": {
                 "connection": {"type": "string"},
                 "sections": {"type": "array", "items": {"type": "string"}},
-                "items": {"type": "boolean"},
+                "events_ack": {"type": "string"},
                 "quest_id": {"type": "integer"},
                 "spell_id": {"type": "integer"},
                 "spell_offset": {"type": "integer"},
@@ -161,6 +185,21 @@ TOOLS = [
                 "inventory_offset": {"type": "integer"},
                 "inventory_limit": {"type": "integer"},
             },
+            "required": ["connection"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "observe_map",
+        "description": (
+            "Optional local terrain schematic. At most once every 5 seconds, "
+            "and it also uses the 1/second navigation-read slot shared with "
+            "navigation_probe, path_preview, and terrain_map. Not a screenshot. "
+            "Ordinary observe stays independent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"connection": {"type": "string"}},
             "required": ["connection"],
             "additionalProperties": False,
         },
@@ -191,6 +230,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "connection": {"type": "string"},
+                "request_id": {"type": "string"},
                 "action": {
                     "type": "object",
                     "description": "Typed action; see list_actions for kinds",

@@ -1,7 +1,33 @@
 # CowCraft MCP — Reverse Engineering Report
 
-Probed 2026-10-11 against `https://cowcraft.world/mcp` (server `cowcraft` v0.3.10,
-MCP protocol `2024-11-05`). Probing was deliberately light: a handful of
+Probed again 2026-10-11 against `https://cowcraft.world/mcp`. The server is
+`cowcraft` **v0.3.16**, protocol `2024-11-05`. The notes below from v0.3.10
+still describe the transport. The live surface is now **15 tools** and
+**161** connect capabilities.
+
+v0.3.16 additions, from `initialize`, `tools/list`, and one unauthenticated
+`connect` + `disconnect` (no account login):
+
+- Tools `resume` and `observe_map`.
+- `resume` requires `username`, `password`, and `model_name`. Optional
+  `connection` and `character_guid`. A success returns a replacement
+  connection; the previous token stops working and is not disconnected first.
+- `observe_map` takes only `connection`. At most once every 5 seconds, and it
+  shares the 1/second navigation-read slot. The body may be an image.
+- `observe` dropped `items` and added `events_ack` (string). Acknowledgement
+  is explicit.
+- `action` accepts optional `request_id`.
+- New action kinds: `navigation_probe` (no fields), `path_preview` (`x`,`y`,`z`),
+  `terrain_map` (no fields), `item_open` (`bag`,`slot`), `item_read_lore`
+  (`item_guid`, optional pages), `object_read_lore` (`guid`, optional pages).
+  The three navigation reads share one call per second and do not move.
+- `face` is exactly one of `guid` or `orientation`.
+- Creation is Human race 1 or Orc race 2. Login is five attempts per account
+  and twenty per IP per minute; this client still waits 60 seconds and honors
+  `retry_after_ms`.
+- `list_actions` without login returns `authentication_required`.
+
+The v0.3.10 probe was deliberately light: a handful of
 `initialize`/`tools/list`/`tools/call` requests, one `connect` + `disconnect`
 cycle. No account credentials used; no authenticated calls made.
 
@@ -25,9 +51,9 @@ Companion files: `cowcraft_mcp.py` (client), `SKILL.md` (usage spec).
 
 | Method | Status |
 |---|---|
-| `initialize` | ✅ returns `protocolVersion`, `capabilities: {tools: {listChanged: true}}`, `serverInfo: {name: "cowcraft", version: "0.3.10"}` |
+| `initialize` | ✅ returns `protocolVersion`, `capabilities: {tools: {listChanged: true}}`, `serverInfo: {name: "cowcraft", version: "0.3.16"}` |
 | `ping` | ✅ returns `{}` |
-| `tools/list` | ✅ 13 tools (large ~48 KB response) |
+| `tools/list` | ✅ 15 tools |
 | `tools/call` | ✅ tool results wrapped in MCP `content[0].text` envelope containing JSON |
 | `resources/list` | ❌ `-32601 Method not found` |
 | `prompts/list` | ❌ `-32601 Method not found` |
@@ -56,8 +82,9 @@ for authenticity (though it clearly keeps server-side lease state).
 
 - `observe`: max **1/sec**, budget **shared with `heartbeat`**
 - `action`: max **20/sec per account**; "shared relay limits may also apply"
-- `login`: `rate_limited` with human message ("Retry in N seconds") and a
-  machine-readable `retry_after_ms` field. Tool descriptions repeatedly say:
+- `navigation_probe`, `path_preview`, and `terrain_map`: **1/sec** shared, and they do not move. `observe_map` is **once per 5 seconds** and also uses that slot
+- `login`: five attempts per account and twenty per IP per minute. This client still waits 60 seconds. `rate_limited` carries
+  a machine-readable `retry_after_ms` field. Tool descriptions repeatedly say:
   *"Honor retry_after_ms; never busy-loop."*
 - **Serial calls enforced per account** — concurrent requests on one
   connection error out. One in-flight request at a time.
@@ -70,14 +97,18 @@ for authenticity (though it clearly keeps server-side lease state).
 
 ---
 
-## 2. Tool Reference (13 tools)
+## 2. Tool Reference (15 tools)
+
+`resume` and `observe_map` are specified in the v0.3.16 delta at the top.
+The per-tool notes below were first captured at v0.3.10 and still apply
+except where that delta changes them.
 
 ### `connect`
 Create a game connection lease. No auth needed.
 
 - **required**: `model_name` (string)
 - **returns**: `connection` (token), `lease`, `transport: "direct-server"`,
-  `capabilities` (array of 155 action-kind names),
+  `capabilities` (array of 161 action-kind names),
   `capabilities_confirmed: true`, `instructions` (usage/anti-cheat text)
 - Full response keys: `lease`, `connection`, `transport`, `capabilities`,
   `capabilities_confirmed`, `instructions`
@@ -101,8 +132,8 @@ List the account's characters **and available creation options**.
 - **required**: `connection`
 
 ### `create_character`
-Create a level-1 **Human (race 1) only** — *"MCP agents can currently play
-Humans only."* Names must be unique (2–12 letters).
+Create a level-1 **Human (race 1) or Orc (race 2)**. Both factions may
+exist on one account. Names must be unique (2–12 letters).
 
 - **args**: `connection` + `character: {name, race, class, gender, skin, face,
   hair_style, hair_color, facial_hair}`
@@ -162,8 +193,10 @@ Submit one typed game action.
 - Explicitly **unavailable** to agents: *"Player Tools, instant levelling,
   map teleport, custom mounts and **all chat** and human-written mail/letters"*
   — agents **cannot send chat messages**.
-- Per-kind schemas: 155 variants in a nested `anyOf`. 68 captured (below);
-  the rest follow the same pattern (kind const + typed params).
+- Per-kind schemas: 156 native kinds in a nested `anyOf` (v0.3.16). `face`
+  is two branches. Connect reports 161 capabilities, including the gateway
+  meta kinds. 68 were captured below; the rest follow the same pattern
+  (kind const + typed params). Optional `request_id` sits beside `action`.
 - `list_actions` returns the *"authenticated, native-confirmed action
   names"* — the server confirms which kinds your session may use. Optional
   `family`/`kind` narrows the listing.
@@ -182,8 +215,9 @@ Close the control lease.
 
 ## 3. Action Catalog
 
-155 capabilities returned by `connect` (SKILL.md said 159 on v0.3.9; live
-v0.3.10 returns 155). Full list:
+v0.3.10 returned 155 names. v0.3.16 returns 161. The six added names are
+`item_open`, `item_read_lore`, `object_read_lore`, `navigation_probe`,
+`path_preview`, and `terrain_map`. The v0.3.10 list:
 
 ```
 characters, create, delete_character, select, observe,
@@ -340,8 +374,9 @@ Key behaviors (observed + documented):
   call's result.
 - **Renewal**: `heartbeat()` (no state) or `observe()` (returns state); every
   ~30–60 s is the documented cadence. Both draw from the same 1/sec budget.
-- **Expiry recovery**: full `connect` → `login` → `select_character` again.
-  Leases are not resumable.
+- **Expiry recovery**: `resume` with the same account and `model_name`
+  replaces the connection when the world lease is still live. `resumed: false`
+  means that session is gone; then `connect` → `login` → `select_character`.
 - **Rate-limit backoff**: `retry_after_ms` on `rate_limited`; never busy-loop.
 
 ---
@@ -351,11 +386,11 @@ Key behaviors (observed + documented):
 ```
  ┌──────────┐   HTTPS/JSON-RPC   ┌─────────────────────┐
  │ AI agent │ ─────────────────▶ │   MCP gateway       │
- │ (Python) │   single-shot POST │   (cowcraft v0.3.10)│
+ │ (Python) │   single-shot POST │   (cowcraft v0.3.16)│
  └──────────┘                    │  - token leases     │
                                  │  - rate limiting    │
                                  │  - serial per-acct  │
-                                 │  - 155 action       │
+                                 │  - 161 action       │
                                  │    schemas          │
                                  └─────────┬───────────┘
                                            │ "direct-server"
@@ -413,10 +448,10 @@ To build a cowcraft-equivalent ("I run the server, my agent plays"):
 | 2 | Native bridge | Custom mangosd **module** (C++) exposing session inject + state snapshot | Hardest part. Alternative: **HermesProxy**-style (WowLegacyCore) connection proxy, or drive a **headless benilla-derived client** per agent session |
 | 3 | MCP gateway | Any language; must implement `initialize`, `ping`, `tools/list`, `tools/call` over single-shot HTTPS POST | Stateless HTTP; token = `UUID.HMAC-SHA256` |
 | 4 | Lease manager | Token issuance, per-account serial queue, expiry timers, `retry_after_ms` backoff | Reap stale leases aggressively (cowcraft's doesn't — don't copy that bug) |
-| 5 | Action schema | 155 typed variants, `additionalProperties: false`, per-kind `const` discriminator | Copy the catalog in §3; validate strictly |
+| 5 | Action schema | 161 capabilities, `additionalProperties: false`, per-kind `const` discriminator | Copy the catalog in §3 plus the six v0.3.16 kinds; validate strictly |
 | 6 | Observe snapshot | Bounded world-state serializer (self, nearby units/objects, quests, auras, combat UI) | 1/sec budget; `sections` param for scoping |
 | 7 | Agent-bound flag | DB column on character + enforcement in command path | Level-1 + no-history gate on first bind |
-| 8 | Rate limiting | 1/s observe, 20/s actions per account, login backoff | |
+| 8 | Rate limiting | 1/s observe, 20/s actions, 1/s navigation reads, 1/5s observe_map, login backoff | |
 
 ### Effort estimate
 
@@ -460,7 +495,7 @@ Accept: application/json, text/event-stream
   "name":"connect","arguments":{"model_name":"my-agent"}}}
 // result.content[0].text =
 {"connection":"<uuid>.<hmac>","lease":{...},"transport":"direct-server",
- "capabilities":[...155...],"capabilities_confirmed":true,"instructions":"..."}
+ "capabilities":[...161...],"capabilities_confirmed":true,"instructions":"..."}
 ```
 
 ```json

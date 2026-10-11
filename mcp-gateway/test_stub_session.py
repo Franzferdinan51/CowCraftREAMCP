@@ -64,13 +64,15 @@ class StubSessionTest(unittest.TestCase):
         self.assertIsInstance(listed, dict)
         names = [item["name"] for item in listed["tools"]]
         self.assertEqual(names, tool_names())
-        self.assertEqual(len(names), 13)
+        self.assertEqual(len(names), 15)
+        self.assertIn("resume", names)
+        self.assertIn("observe_map", names)
         for required in ("stop", "disconnect"):
             tool = next(item for item in listed["tools"] if item["name"] == required)
             schema = tool["inputSchema"]
             self.assertIn("connection", schema["properties"])
             self.assertIn("connection", schema["required"])
-        print("SESSION tools/list is one object naming all 13 tools")
+        print("SESSION tools/list is one object naming all 15 tools")
 
         token = client.connect(label)
         self.assertIsNotNone(TOKEN_RE.fullmatch(token))
@@ -93,8 +95,8 @@ class StubSessionTest(unittest.TestCase):
 
         creates_before = len(harness.named(client._sent, "create_character"))
         with self.assertRaises(CowCraftError) as rejected_race:
-            client.create_character("Orcname", race=2)
-        self.assertEqual(rejected_race.exception.code, "humans_only")
+            client.create_character("Elfname", race=7)
+        self.assertEqual(rejected_race.exception.code, "invalid_arguments")
         self.assertEqual(
             len(harness.named(client._sent, "create_character")),
             creates_before,
@@ -106,7 +108,12 @@ class StubSessionTest(unittest.TestCase):
         race = sent_create["params"]["arguments"]["character"]["race"]
         self.assertEqual(race, 1)
         self.assertIs(type(race), int)
-        print("SESSION create_character sent Human race 1 only")
+        orc = client.create_character("Throg", char_class=1, race=2)
+        self.assertIs(type(orc["character"]["guid"]), int)
+        orc_race = harness.named(client._sent, "create_character")[-1]
+        orc_race = orc_race["params"]["arguments"]["character"]["race"]
+        self.assertEqual(orc_race, 2)
+        print("SESSION create_character sent Human race 1 and Orc race 2")
 
         selects_before = len(harness.named(client._sent, "select_character"))
         with self.assertRaises(CowCraftError) as rejected_guid:

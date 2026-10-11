@@ -650,6 +650,10 @@ class ProxyLeaseTest(unittest.TestCase):
                             "power_cost": 15,
                         }],
                     }),
+                    harness.tool_result({"events_ack": "9"}),
+                    harness.tool_result({"ok": True}),
+                    harness.tool_result({"created": True}),
+                    harness.tool_result({"deleted": True}),
                 ],
                 os.path.join(tmp, "conn.txt"),
                 os.path.join(tmp, "model.txt"),
@@ -662,11 +666,49 @@ class ProxyLeaseTest(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             arguments = calls[0]["params"]["arguments"]
             self.assertEqual(arguments["spell_limit"], 40)
+            self.assertNotIn("items", arguments)
             self.assertEqual(arguments["sections"], ["self", "ui"])
+            acked = backend.observe(
+                "ada", events_ack="9", quest_id=1, spell_id=686,
+                inventory_offset=0, inventory_limit=64)
+            self.assertEqual(acked["events_ack"], "9")
+            ack_args = harness.named(transport.payloads, "observe")[1]
+            ack_args = ack_args["params"]["arguments"]
+            self.assertEqual(ack_args["events_ack"], "9")
+            self.assertEqual(ack_args["quest_id"], 1)
+            self.assertEqual(ack_args["spell_id"], 686)
+            self.assertEqual(ack_args["inventory_offset"], 0)
+            self.assertEqual(ack_args["inventory_limit"], 64)
+            self.assertNotIn("items", ack_args)
+            backend.create_character("ada", {
+                "name": "Theron", "race": 1, "class": 1,
+                "gender": 1, "hair_style": 3, "facial_hair": 2,
+            })
+            created = harness.named(transport.payloads, "create_character")[-1]
+            character = created["params"]["arguments"]["character"]
+            self.assertEqual(character["race"], 1)
+            self.assertEqual(character["gender"], 1)
+            self.assertEqual(character["hair_style"], 3)
+            self.assertEqual(character["facial_hair"], 2)
+            self.assertEqual(character["skin"], 0)
+            backend.delete_character("ada", 9, "Theron", request_id="del-1")
+            deleted = harness.named(transport.payloads, "delete_character")[-1]
+            self.assertEqual(
+                deleted["params"]["arguments"]["request_id"], "del-1")
+            self.assertEqual(deleted["params"]["arguments"]["confirm_name"], "Theron")
+            backend.do_action(
+                "ada", {"kind": "navigation_probe"}, request_id="req-9")
+            sent_action = harness.named(transport.payloads, "action")[-1]
+            self.assertEqual(sent_action["params"]["arguments"]["request_id"], "req-9")
+            self.assertEqual(
+                sent_action["params"]["arguments"]["action"]["kind"],
+                "navigation_probe",
+            )
             self.assertEqual(len(harness.named(transport.payloads, "login")), 1)
             self.assertNotIn(password, str(arguments))
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
         print("PROXY observe forwarded spell_limit and the ui section")
+        print("PROXY observe forwarded page fields, appearance, and delete request_id")
 
     def test_proxy_login_twice_inside_ten_seconds_keeps_the_session(self):
         password = harness.fixture_secret()

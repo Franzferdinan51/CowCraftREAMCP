@@ -327,16 +327,29 @@ class CowCraftBackend(WoWBackend):
             race = int(race)
         except (TypeError, ValueError):
             race = 0
+        def appearance(key):
+            try:
+                return int(character.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
         return self._call(
             s, "create_character",
             lambda: s.game.create_character(
-                name, char_class=char_class, race=race))
+                name, char_class=char_class, race=race,
+                gender=appearance("gender"),
+                skin=appearance("skin"),
+                face=appearance("face"),
+                hair_style=appearance("hair_style"),
+                hair_color=appearance("hair_color"),
+                facial_hair=appearance("facial_hair")))
 
-    def delete_character(self, username, guid, confirm_name):
+    def delete_character(self, username, guid, confirm_name, request_id=None):
         s = self._session(username)
         return self._call(
             s, "delete_character",
-            lambda: s.game.delete_character(int(guid), confirm_name))
+            lambda: s.game.delete_character(
+                int(guid), confirm_name, request_id=request_id))
 
     def enter_world(self, username, character_guid):
         s = self._session(username)
@@ -376,9 +389,13 @@ class CowCraftBackend(WoWBackend):
             out["left"] = released
             return out
 
-    def observe(self, username, sections=None, spell_limit=None, spell_offset=None):
+    def observe(self, username, sections=None, spell_limit=None, spell_offset=None,
+                events_ack=None, quest_id=None, spell_id=None,
+                inventory_offset=None, inventory_limit=None):
         s = self._session(username)
-        if sections is None and spell_limit is None and spell_offset is None:
+        if (sections is None and spell_limit is None and spell_offset is None
+                and events_ack is None and quest_id is None and spell_id is None
+                and inventory_offset is None and inventory_limit is None):
             return self._call(s, "observe", s.game.observe)
         return self._call(
             s, "observe",
@@ -386,9 +403,37 @@ class CowCraftBackend(WoWBackend):
                 sections=sections,
                 spell_limit=spell_limit,
                 spell_offset=spell_offset,
+                events_ack=events_ack,
+                quest_id=quest_id,
+                spell_id=spell_id,
+                inventory_offset=inventory_offset,
+                inventory_limit=inventory_limit,
             ))
 
-    def do_action(self, username, action):
+    def observe_map(self, username):
+        s = self._session(username)
+        return self._call(s, "observe_map", s.game.observe_map)
+
+    def resume_session(self, username, password, model_name, character_guid=None):
+        s = self._session(username)
+        s.password = password
+        s.agent_label = model_name
+
+        def call():
+            body = s.game.resume(
+                username, password, model_name, character_guid=character_guid)
+            s.connected = True
+            s.login_body = body if isinstance(body, dict) else {"resumed": True}
+            if character_guid is not None and isinstance(body, dict) and body.get("resumed"):
+                s.in_world = True
+            if isinstance(body, dict):
+                return {key: value for key, value in body.items()
+                        if key != "connection"}
+            return {"resumed": True}
+
+        return self._call(s, "resume", call)
+
+    def do_action(self, username, action, request_id=None):
         s = self._session(username)
         if not isinstance(action, dict):
             raise BackendError("invalid_arguments", "action must be an object")
@@ -398,12 +443,15 @@ class CowCraftBackend(WoWBackend):
         }
         if not name:
             raise BackendError("invalid_arguments", "action needs kind/name")
-        return self._call(s, f"action:{name}",
-                          lambda: s.game.action(name, params))
+        return self._call(
+            s, "action:%s" % name,
+            lambda: s.game.action(name, params, request_id=request_id))
 
     def list_actions(self, username, family=None, kind=None):
         s = self._session(username)
-        return self._call(s, "list_actions", s.game.list_actions)
+        return self._call(
+            s, "list_actions",
+            lambda: s.game.list_actions(family=family, kind=kind))
 
     def stop(self, username):
         s = self._session(username)

@@ -5,7 +5,7 @@ Minta MCP gateway — a CowCraft-compatible MCP server for vanilla WoW.
 Replicates cowcraft.world/mcp's protocol:
 - Streamable HTTP: one JSON-RPC message per POST, plain JSON response
 - MCP methods: initialize, ping, tools/list, tools/call
-- 13 tools, 155 game action capabilities
+- 15 tools, 161 game action capabilities
 - Token leases (UUIDv4.HMAC-SHA256), per-account serial, rate limits
 
 Backend: configurable via BACKEND env var.
@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from leases import LeaseManager, LeaseState          # noqa: E402
 from tools import TOOLS, tool_names                 # noqa: E402
 from actions import CAPABILITIES, validate_action    # noqa: E402
+from cowcraft_mcp import NAV_READ_KINDS              # noqa: E402
 from backend import StubBackend, BackendError        # noqa: E402
 
 SERVER_NAME = "minta"
@@ -52,8 +53,12 @@ INSTRUCTIONS = (
     "On rate_limited, wait for retry_after_ms. "
     "3. characters, then select_character with an integer guid. "
     "If the result is benchmark_selection_rejected, do not retry that character. "
-    "Select another character that accepts this label, or create a level-1 Human (race 1) and select that once. "
+    "Select another character that accepts this label, or create a level-1 Human (race 1) or Orc (race 2) and select that once. "
     "4. observe, then act. Observe and heartbeat share one call per second. "
+    "events_ack is the last event sequence you have processed; send it only with the events section. "
+    "observe_map is at most once every 5 seconds. "
+    "navigation_probe, path_preview, and terrain_map share one call per second and do not move you. "
+    "resume uses the same account and model_name after a dropped token and replaces that token. "
     "An action acknowledgement is not success; observe again. "
     "Cast a spell the server already listed when power can pay for it, then attack. "
     "To loot, open the body, observe the ui section, take each listed slot and any money, then close. "
@@ -234,8 +239,9 @@ def tool_delete_character(args):
                           "guid must be a JSON number")
     try:
         with account_lock(lease.account):
-            result = backend.delete_character(lease.account, guid,
-                                              confirm_name)
+            result = backend.delete_character(
+                lease.account, guid, confirm_name,
+                request_id=args.get("request_id"))
     except BackendError as e:
         lease.touch()
         return game_error(e.code, e.message)
@@ -299,6 +305,11 @@ def tool_observe(args):
                 sections=args.get("sections"),
                 spell_limit=args.get("spell_limit"),
                 spell_offset=args.get("spell_offset"),
+                events_ack=args.get("events_ack"),
+                quest_id=args.get("quest_id"),
+                spell_id=args.get("spell_id"),
+                inventory_offset=args.get("inventory_offset"),
+                inventory_limit=args.get("inventory_limit"),
             )
     except BackendError as e:
         lease.touch()
@@ -307,6 +318,64 @@ def tool_observe(args):
     result["lease"] = {"seconds_remaining":
                        max(0, int(lease.expires_at - time.time())),
                        "state": lease.state}
+    lease.touch()
+    return ok_result(result)
+
+
+def tool_observe_map(args):
+    lease, err = _authed(args)
+    if err:
+        return err
+    if lease.state != LeaseState.IN_WORLD:
+        lease.touch()
+        return game_error("not_in_world", "select a character first")
+    wait_ms = lease.check_map_budget()
+    if wait_ms:
+        lease.touch()
+        return game_error("rate_limited",
+                          "observe_map budget exceeded (1/5sec)",
+                          retry_after_ms=wait_ms)
+    try:
+        with account_lock(lease.account):
+            result = backend.observe_map(lease.account)
+    except BackendError as e:
+        lease.touch()
+        return game_error(e.code, e.message)
+    lease.touch()
+    return ok_result(result)
+
+
+def tool_resume(args):
+    lease, err = _authed(args)
+    if err:
+        return err
+    username = args.get("username", "")
+    password = args.get("password", "")
+    model_name = args.get("model_name") or lease.model_name
+    if not username or not password or not model_name:
+        lease.touch()
+        return game_error("invalid_arguments",
+                          "username, password, and model_name are required")
+    try:
+        with account_lock(username):
+            result = backend.resume_session(
+                username, password, model_name,
+                character_guid=args.get("character_guid"))
+    except BackendError as e:
+        lease.touch()
+        return game_error(e.code, e.message)
+    if isinstance(result, dict):
+        result = {key: value for key, value in result.items()
+                  if key != "connection"}
+    busy = leases.bind_account(lease, username)
+    if busy:
+        lease.touch()
+        return game_error(
+            "account_busy",
+            "This account already has a direct agent lease; "
+            "disconnect the existing session first.")
+    if args.get("character_guid") and isinstance(result, dict) and result.get("resumed"):
+        leases.bind_character(lease, args.get("character_guid"))
     lease.touch()
     return ok_result(result)
 
@@ -339,6 +408,13 @@ def tool_action(args):
     if not valid:
         lease.touch()
         return game_error("invalid_arguments", msg)
+    if action.get("kind") in NAV_READ_KINDS:
+        wait_ms = lease.check_nav_budget()
+        if wait_ms:
+            lease.touch()
+            return game_error("rate_limited",
+                              "navigation read budget exceeded (1/sec)",
+                              retry_after_ms=wait_ms)
     wait_ms = lease.check_action_budget()
     if wait_ms:
         lease.touch()
@@ -347,7 +423,8 @@ def tool_action(args):
                           retry_after_ms=wait_ms)
     try:
         with account_lock(lease.account):
-            result = backend.do_action(lease.account, action)
+            result = backend.do_action(
+                lease.account, action, request_id=args.get("request_id"))
     except BackendError as e:
         lease.touch()
         return game_error(e.code, e.message)
@@ -411,6 +488,8 @@ TOOL_HANDLERS = {
     "delete_character": tool_delete_character,
     "select_character": tool_select_character,
     "observe": tool_observe,
+    "observe_map": tool_observe_map,
+    "resume": tool_resume,
     "heartbeat": tool_heartbeat,
     "action": tool_action,
     "list_actions": tool_list_actions,

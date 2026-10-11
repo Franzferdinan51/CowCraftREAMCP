@@ -47,9 +47,9 @@ export MINTA_GATEWAY_URL=http://127.0.0.1:8901/mcp
 The gateway's `initialize` result includes `instructions`. Follow that order:
 
 1. `connect` with a stable `model_name` (the agent label). Reuse it for that character.
-2. `login` with this caller's username and password. At most one login per 60 seconds. A saved connection token for this account is resumed and is not disconnected. `account_busy` is not `rate_limited`: wait and try once, and leave a backup copy for a later process to release. On `rate_limited`, wait for `retry_after_ms`.
-3. `characters`, then `select_character` with an integer guid. On `benchmark_selection_rejected`, do not retry that character. Select another, or create a level-1 Human (race 1) and select that once.
-4. `observe`, then act. Observe and heartbeat share one call per second. Confirm the action with a new observe. Attack casts a spell the server listed when power can pay for it. Loot opens the body, observes the ui section, takes the listed slots and any money, then closes.
+2. `login` with this caller's username and password. At most one login per 60 seconds. The server also allows five logins per account and twenty per IP each minute; wait for `retry_after_ms`. A saved connection token for this account is resumed and is not disconnected. `account_busy` is not `rate_limited`: wait and try once, and leave a backup copy for a later process to release. After a dropped token, call `resume` with the same username, password, and `model_name`; the server replaces the connection.
+3. `characters`, then create or select a level-one Human (race 1) or Orc (race 2). `select_character` takes an integer guid. On `benchmark_selection_rejected`, do not retry that character. Select another, or create one and select that once.
+4. `observe`, then act. Observe and heartbeat share one call per second. `observe_map` is at most once every 5 seconds. `navigation_probe`, `path_preview`, and `terrain_map` share one call per second and do not move the character. Send `events_ack` only for events you have already processed. Confirm the action with a new observe. Attack casts a spell the server listed when power can pay for it. Loot opens the body, observes the ui section, takes the listed slots and any money, then closes.
 5. `disconnect` when finished.
 
 `bot_mode.py` performs this sequence before the local model chooses a move. The model only sees a short summary of self, nearby hostiles, and money.
@@ -131,5 +131,5 @@ parallel against the loaded model.
 
 ## References
 
-- `references/gateway-protocol.md` — the 13 MCP tools and 155 game actions
+- `references/gateway-protocol.md` — the 15 MCP tools and 161 game actions
 - `references/troubleshooting.md` — common failures and fixes

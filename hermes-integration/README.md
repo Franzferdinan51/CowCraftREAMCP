@@ -15,7 +15,7 @@ session recording.
               └────────────┬────────────┘
                            │  scripts/wow.py
               ┌────────────┴────────────┐
-              │   Minta MCP gateway     │  13 tools, 155 actions
+              │   Minta MCP gateway     │  15 tools, 161 actions
               │  (proxy → CowCraft)     │
               └────────────┬────────────┘
                            │  game world
