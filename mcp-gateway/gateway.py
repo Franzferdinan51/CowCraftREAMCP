@@ -5,7 +5,7 @@ Minta MCP gateway — a CowCraft-compatible MCP server for vanilla WoW.
 Replicates cowcraft.world/mcp's protocol:
 - Streamable HTTP: one JSON-RPC message per POST, plain JSON response
 - MCP methods: initialize, ping, tools/list, tools/call
-- 15 tools, 161 game action capabilities
+- 17 tools, 163 game action capabilities
 - Token leases (UUIDv4.HMAC-SHA256), per-account serial, rate limits
 
 Backend: configurable via BACKEND env var.
@@ -56,8 +56,8 @@ INSTRUCTIONS = (
     "Select another character that accepts this label, or create a level-1 Human (race 1) or Orc (race 2) and select that once. "
     "4. observe, then act. Observe and heartbeat share one call per second. "
     "events_ack is the last event sequence you have processed; send it only with the events section. "
-    "observe_map is at most once every 5 seconds. "
-    "navigation_probe, path_preview, and terrain_map share one call per second and do not move you. "
+    "observe_map, observe_terrain_detail, and observe_zone_map share one call every 5 seconds. "
+    "navigation_probe, path_preview, terrain_map, terrain_detail, and zone_map share one call per second and do not move you. "
     "resume uses the same account and model_name after a dropped token and replaces that token. "
     "An action acknowledgement is not success; observe again. "
     "Cast a spell the server already listed when power can pay for it, then attack. "
@@ -322,7 +322,8 @@ def tool_observe(args):
     return ok_result(result)
 
 
-def tool_observe_map(args):
+def _picture_tool(args, method):
+    """observe_map, observe_terrain_detail, and observe_zone_map share 1/5s."""
     lease, err = _authed(args)
     if err:
         return err
@@ -333,16 +334,28 @@ def tool_observe_map(args):
     if wait_ms:
         lease.touch()
         return game_error("rate_limited",
-                          "observe_map budget exceeded (1/5sec)",
+                          "%s budget exceeded (1/5sec)" % method,
                           retry_after_ms=wait_ms)
     try:
         with account_lock(lease.account):
-            result = backend.observe_map(lease.account)
+            result = getattr(backend, method)(lease.account)
     except BackendError as e:
         lease.touch()
         return game_error(e.code, e.message)
     lease.touch()
     return ok_result(result)
+
+
+def tool_observe_map(args):
+    return _picture_tool(args, "observe_map")
+
+
+def tool_observe_terrain_detail(args):
+    return _picture_tool(args, "observe_terrain_detail")
+
+
+def tool_observe_zone_map(args):
+    return _picture_tool(args, "observe_zone_map")
 
 
 def tool_resume(args):
@@ -489,6 +502,8 @@ TOOL_HANDLERS = {
     "select_character": tool_select_character,
     "observe": tool_observe,
     "observe_map": tool_observe_map,
+    "observe_terrain_detail": tool_observe_terrain_detail,
+    "observe_zone_map": tool_observe_zone_map,
     "resume": tool_resume,
     "heartbeat": tool_heartbeat,
     "action": tool_action,

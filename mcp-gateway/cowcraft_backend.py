@@ -428,6 +428,14 @@ class CowCraftBackend(WoWBackend):
         s = self._session(username)
         return self._call(s, "observe_map", s.game.observe_map)
 
+    def observe_terrain_detail(self, username):
+        s = self._session(username)
+        return self._call(s, "observe_terrain_detail", s.game.observe_terrain_detail)
+
+    def observe_zone_map(self, username):
+        s = self._session(username)
+        return self._call(s, "observe_zone_map", s.game.observe_zone_map)
+
     def resume_session(self, username, password, model_name, character_guid=None):
         s = self._session(username)
         s.password = password

@@ -61,6 +61,14 @@ class WoWBackend:
         """Return a local terrain schematic, or a stub note."""
         raise NotImplementedError
 
+    def observe_terrain_detail(self, username):
+        """Return a forward terrain schematic, or a stub note."""
+        raise NotImplementedError
+
+    def observe_zone_map(self, username):
+        """Return the explored zone map, or a stub note."""
+        raise NotImplementedError
+
     def resume_session(self, username, password, model_name, character_guid=None):
         """Recover an upstream session. Must not return a connection token."""
         raise NotImplementedError
@@ -207,6 +215,16 @@ class StubBackend(WoWBackend):
         if username.lower() not in self.sessions:
             raise BackendError("not_in_world", "no character in world")
         return {"stub": True, "mimeType": "image/png"}
+
+    def observe_terrain_detail(self, username):
+        if username.lower() not in self.sessions:
+            raise BackendError("not_in_world", "no character in world")
+        return {"stub": True, "mimeType": "image/png", "kind": "terrain_detail"}
+
+    def observe_zone_map(self, username):
+        if username.lower() not in self.sessions:
+            raise BackendError("not_in_world", "no character in world")
+        return {"stub": True, "mimeType": "image/png", "kind": "zone_map"}
 
     def resume_session(self, username, password, model_name, character_guid=None):
         acct = self._check_pw(username, password)

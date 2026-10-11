@@ -39,6 +39,10 @@ MAP_MIN_INTERVAL_S = 5.0
 NAV_READ_INTERVAL_S = 1.0
 NAV_READ_KINDS = frozenset({
     "navigation_probe", "path_preview", "terrain_map",
+    "terrain_detail", "zone_map",
+})
+PICTURE_TOOLS = frozenset({
+    "observe_map", "observe_terrain_detail", "observe_zone_map",
 })
 MAX_TRANSPORT_ATTEMPTS = 3
 SENT_LOG_LIMIT = 128
@@ -441,8 +445,9 @@ class CowCraft:
         with self._rpc_lock:
             if tool_name in ("observe", "heartbeat"):
                 self._acquire_observe_slot()
-            elif tool_name == "observe_map":
-                # Map is once per 5s and also consumes the 1/s navigation read.
+            elif tool_name in PICTURE_TOOLS:
+                # Terrain and zone pictures share one call per 5s and the
+                # 1/s navigation read. Ordinary observe stays independent.
                 self._acquire_slot("_next_nav_at", NAV_READ_INTERVAL_S)
                 self._acquire_slot("_next_map_at", MAP_MIN_INTERVAL_S)
             elif tool_name == "action" and self._action_kind(params) in NAV_READ_KINDS:
@@ -687,6 +692,16 @@ class CowCraft:
         self._need_conn()
         return self._tool("observe_map", {"connection": self.connection})
 
+    def observe_terrain_detail(self):
+        """Forward terrain schematic. Shares the 5s picture quota."""
+        self._need_conn()
+        return self._tool("observe_terrain_detail", {"connection": self.connection})
+
+    def observe_zone_map(self):
+        """Explored zone map with self position. Shares the 5s picture quota."""
+        self._need_conn()
+        return self._tool("observe_zone_map", {"connection": self.connection})
+
     def resume(self, username, password, model_name, character_guid=None):
         """Recover a session. The server replaces the previous connection token.
 
@@ -807,16 +822,23 @@ class CowCraft:
         return saved
 
     def self_state(self):
-        state = self.observe()
-        for unit in state.get("nearby_units", []):
-            if unit.get("guid") == str(state.get("self_guid", "")):
-                return unit
-        return None
+        """Player fields. They live on observe["self"], not the top-level body."""
+        state = self.observe() or {}
+        me = state.get("self") if isinstance(state, dict) else None
+        return me if isinstance(me, dict) else None
 
     def nearby_players(self):
-        state = self.observe()
-        return [u for u in state.get("nearby_units", [])
-                if u.get("npc_flags", 0) == 0 and not u.get("dead", False)]
+        """Player faction templates. npc_flags 0 is not enough to mean player."""
+        from cowcraft_world import is_player_unit
+        state = self.observe() or {}
+        units = state.get("nearby_units") if isinstance(state, dict) else None
+        return [unit for unit in (units or []) if is_player_unit(unit)]
+
+    def nav(self):
+        """Movement, loot, and quest helper bound to this client."""
+        from cowcraft_nav import Nav
+        walker = Nav(self)
+        return walker
 
     def nearby_npcs(self):
         state = self.observe()

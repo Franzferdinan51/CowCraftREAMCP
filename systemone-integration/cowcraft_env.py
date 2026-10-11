@@ -27,9 +27,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp-gateway"))
 
 try:
     from cowcraft_mcp import CowCraft, CowCraftError
+    from cowcraft_world import is_attackable, is_lootable, player_xyz
 except ImportError:  # pragma: no cover
     CowCraft = None
     CowCraftError = Exception
+    def is_attackable(_unit):
+        return False
+    def is_lootable(_unit):
+        return False
+    def player_xyz(_state):
+        return None, None, None
 
 
 # Discrete action vocabulary the judge chooses from.
@@ -505,19 +512,19 @@ class CowCraftEnv:
         except Exception:
             return
         me = self._me()
-        if me:
+        x, y, z = player_xyz(self.state)
+        if x is not None and y is not None and z is not None:
+            self._pos = (x, y, z)
+        elif me:
             self._pos = (me.get("x", 0.0), me.get("y", 0.0), me.get("z", 0.0))
+        if me:
             self._hp = (me.get("health", 1), me.get("max_health", 1))
 
     def _me(self):
-        me = self.state.get("self")
-        if isinstance(me, dict) and me.get("x") is not None:
+        me = self.state.get("self") if isinstance(self.state, dict) else None
+        if isinstance(me, dict):
             return me
-        for unit in self.state.get("nearby_units", []):
-            if unit.get("name", "").lower() == self.character_name.lower():
-                return unit
-        units = self.state.get("nearby_units", [])
-        return units[0] if units else None
+        return None
 
     def _digit_guid(self, unit):
         guid = str((unit or {}).get("guid") or "")
@@ -526,11 +533,10 @@ class CowCraftEnv:
         return None
 
     def _is_hostile(self, unit):
-        if not isinstance(unit, dict) or unit.get("dead"):
+        player = {"race": self.race}
+        if not is_attackable(unit, player):
             return False
-        if unit.get("hostile") is True or unit.get("faction") == 32:
-            return self._digit_guid(unit) is not None
-        return False
+        return self._digit_guid(unit) is not None
 
     def _nearest_hostile(self):
         best, best_d = None, float("inf")
@@ -545,9 +551,7 @@ class CowCraftEnv:
     def _nearest_corpse(self):
         best, best_d = None, float("inf")
         for unit in self.state.get("nearby_units", []):
-            if not isinstance(unit, dict) or not unit.get("dead"):
-                continue
-            if not (unit.get("hostile") is True or unit.get("faction") == 32):
+            if not is_lootable(unit):
                 continue
             if self._digit_guid(unit) is None:
                 continue

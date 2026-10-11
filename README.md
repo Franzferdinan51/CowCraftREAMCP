@@ -2,8 +2,8 @@
 
 Self-hosted vanilla WoW (1.12.1) MCP stack for AI agents, reverse-engineered
 from [cowcraft.world](https://cowcraft.world). The live target is
-[https://cowcraft.world/mcp](https://cowcraft.world/mcp) (server 0.3.16):
-15 tools and 161 actions. CMaNGOS stays optional and is not wired up.
+[https://cowcraft.world/mcp](https://cowcraft.world/mcp) (server 0.3.18):
+17 tools and 163 actions. CMaNGOS stays optional and is not wired up.
 
 Already-loaded local models may advise. The main model chooses the action.
 That advice is not required, and a missing advisor does not block the tick.
@@ -158,6 +158,37 @@ game.resume("your-account", "your-password", "my-agent")
 leases. Those are the cases where a new login is appropriate. Honor
 `retry_after_ms` on `rate_limited`.
 
+### Read yourself, walk, loot, and accept a quest
+
+Position, health, level, and money are on `observe["self"]`. Top-level `x`
+and `y` are empty. `self.money` is total copper, or a gold/silver/copper
+dict. `Nav` in `cowcraft_nav.py` is the helper:
+
+```python
+from cowcraft_mcp import CowCraft
+from cowcraft_nav import Nav
+
+nav = Nav(game)
+nav.refresh()
+nav.goto(x, y, z)          # path_preview clamped to 35 yards, then each waypoint
+nav.step_toward(x, y, z)   # one move of at most 5 yards
+nav.loot_corpse(unit)      # only when dead and loot_eligible
+nav.accept_quest(giver)    # interact, then quest_accept {guid, quest_id}
+nav.sell(vendor_guid, item_guid, count)
+nav.inventory()            # observe sections=["inventory"]
+```
+
+A living unit is attackable when its reaction to the player is hostile.
+`hostile: true` or `hostile: false` from the server is that reaction. When
+`hostile` is missing or null, the client uses vanilla 1.12 faction-template
+masks: hostile when `(hostileMask & ourMask) != 0` or an enemy-faction link
+in either direction, and not when a friendly mask or friend link says
+otherwise. Display names are not used. Dead, immune, and non-attackable
+units are skipped. Quest givers are `npc_flags & 2`, vendors `& 4`, trainers
+`& 16`, auctioneers `& 4096` (bit `1024` is the tabard designer). Those four
+roles are not attack targets. Human characters use faction template 1.
+Orc characters use template 2.
+
 ### Look around
 
 `observe` and `heartbeat` share one call per second. Ask for the pages you
@@ -170,15 +201,19 @@ game.heartbeat()
 ```
 
 These reads do not move the character. `navigation_probe`, `path_preview`,
-and `terrain_map` share one call per second. `observe_map` is at most once
-every 5 seconds and also uses that navigation slot. The map result is a
-terrain image, not a camera screenshot.
+`terrain_map`, `terrain_detail`, and `zone_map` share one call per second.
+`observe_map`, `observe_terrain_detail`, and `observe_zone_map` share one
+call every 5 seconds and also use that navigation slot. Each result is a
+map image, not a camera screenshot. `path_preview` rejects destinations
+farther than 40 yards; `goto` clamps each leg to 35.
 
 ```python
 game.action("navigation_probe")
 game.action("path_preview", {"x": me["x"] + 10, "y": me["y"], "z": me["z"]})
 game.action("terrain_map")
 game.observe_map()
+game.observe_terrain_detail()
+game.observe_zone_map()
 game.action("face", {"guid": 456})            # guid or orientation, not both
 game.action("face", {"orientation": 1.57})
 ```
@@ -270,8 +305,8 @@ server returns.
 |---|---|
 | `observe`, `heartbeat` | 1 per second, shared |
 | `action` | 20 per second, serial per account |
-| `navigation_probe`, `path_preview`, `terrain_map` | 1 per second, shared, no movement |
-| `observe_map` | 1 per 5 seconds, and it uses the navigation slot |
+| `navigation_probe`, `path_preview`, `terrain_map`, `terrain_detail`, `zone_map` | 1 per second, shared, no movement |
+| `observe_map`, `observe_terrain_detail`, `observe_zone_map` | 1 per 5 seconds, shared, and they use the navigation slot |
 | `login` | 1 per 60 seconds in this client. The server also allows five per account and twenty per IP each minute |
 | `register` | five attempts per IP per five minutes |
 
@@ -289,7 +324,7 @@ Tools, or instant levelling.
 
 ## Status
 
-- [x] MCP protocol replicated for cowcraft.world 0.3.16 (15 tools, 161 actions)
+- [x] MCP protocol replicated for cowcraft.world 0.3.18 (17 tools, 163 actions)
 - [x] Proxy backend, saved-lease resume, and token backup outside the repo
 - [x] Spells from the server spell list, and loot of the open window
 - [x] Navigation reads and `observe_map`, paced on the client

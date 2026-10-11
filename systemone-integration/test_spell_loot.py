@@ -102,8 +102,8 @@ class SpellLootTest(unittest.TestCase):
                     "health": 40, "max_health": 50, "power": 15,
                 },
                 "nearby_units": [{
-                    "name": "Young Wolf", "guid": "42", "faction": 32,
-                    "hostile": False, "dead": False, "x": 1, "y": 1,
+                    "name": "Zzax", "guid": "42", "faction": 14,
+                    "hostile": None, "dead": False, "x": 1, "y": 1,
                 }],
             }
             game = FakeGame(fight)
@@ -133,7 +133,7 @@ class SpellLootTest(unittest.TestCase):
                 "self": {"name": "Ada", "x": 0, "y": 0, "z": 0, "health": 40, "max_health": 50},
                 "nearby_units": [{
                     "name": "Young Wolf", "guid": "99", "faction": 32,
-                    "dead": True, "x": 1, "y": 1,
+                    "dead": True, "loot_eligible": True, "x": 1, "y": 1,
                 }],
                 "ordinary_ui": {
                     "loot": {

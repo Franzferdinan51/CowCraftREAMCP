@@ -1,9 +1,50 @@
 # CowCraft MCP — Reverse Engineering Report
 
-Probed again 2026-10-11 against `https://cowcraft.world/mcp`. The server is
-`cowcraft` **v0.3.16**, protocol `2024-11-05`. The notes below from v0.3.10
-still describe the transport. The live surface is now **15 tools** and
-**161** connect capabilities.
+Probed 2026-10-11 against `https://cowcraft.world/mcp` with the local test
+account only. The server is `cowcraft` **v0.3.18**, protocol `2024-11-05`.
+`initialize` still returns `capabilities: {tools: {listChanged: true}}` and
+no `instructions` field. The v0.3.16 notes below still describe the transport
+except where this delta says otherwise.
+
+v0.3.18 delta from one authenticated session (initialize, tools/list, connect,
+login, one new Human character, select, observe, list_actions, one
+`path_preview`, disconnect):
+
+- Tools **17**. Added `observe_terrain_detail` and `observe_zone_map`. Both
+  take only `connection`. They share the five-second picture quota with
+  `observe_map` and the one-per-second navigation read.
+- Connect capabilities **163**. Added action kinds `terrain_detail` and
+  `zone_map`, each with no fields. Connect also returns a `limits` object.
+- `list_actions` returned 158 names. The five connect names that are not
+  action kinds are still `characters`, `create`, `delete_character`,
+  `select`, and `observe`. There is no bare `loot` kind.
+- `path_preview` is still `{x, y, z}`. A 5-yard preview returned
+  `max_distance_yards: 40`, `path_status: "complete"`, and `waypoints` as
+  `{x, y, z}` points. `move` is still `{x, y, z}`.
+- Loot is still `loot_open {guid}`, `loot_take {slot}`, `loot_money {}`,
+  `loot_close {guid}`. `quest_accept` is still `{guid, quest_id}`.
+  `vendor_sell` is still `{guid, item_guid, count}` plus optional
+  `confirm_important_item`. `face` is still exactly one of `guid` or
+  `orientation`.
+- `observe` self has numeric `x`, `y`, `z`, `health`, `level`, and `money`.
+  On this character `money` was an integer copper total (`0`). Top-level
+  `x` and `y` were null. `self.movement.status` was `"idle"`.
+- Nearby units expose `faction`, `hostile`, `dead`, `npc_flags`,
+  `loot_eligible`, `quest_marker`, position, and vitals. In this snapshot
+  `hostile` was `false` on every unit, so it did not separate enemies from
+  guards. Classification uses that boolean when it is a boolean, and
+  otherwise vanilla 1.12 faction-template reaction. Seen `npc_flags`: `0`,
+  `2` (quest giver), `3` (gossip|quest giver), `4` (vendor), `16388`
+  (vendor|repair). Auctioneer was not in the snapshot; classic bit `4096`
+  stays the auctioneer, and bit `1024` stays the tabard designer.
+- Faction template `32` has zero masks and an enemy link to faction `28`, so
+  it is not hostile to a Human. Template `14` (hostileMask `1`) is. Template `12`
+  is friendly to Alliance and hostile to Horde. Template `35` is friendly
+  to players. Template `31` is neutral.
+
+Probed earlier the same day at **v0.3.16**, protocol `2024-11-05`. Those
+notes from v0.3.10 still describe the transport. That surface was **15
+tools** and **161** connect capabilities.
 
 v0.3.16 additions, from `initialize`, `tools/list`, and one unauthenticated
 `connect` + `disconnect` (no account login):

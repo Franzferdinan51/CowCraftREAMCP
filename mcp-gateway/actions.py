@@ -1,12 +1,12 @@
 """
 Action catalog for the Minta MCP gateway.
 
-161 action kinds, replicated from CowCraft's `connect` response (v0.3.16).
+163 action kinds, replicated from CowCraft's `connect` response (v0.3.18).
 Schemas follow the observed pattern: kind const discriminator + typed params,
 additionalProperties: false on every variant.
 """
 
-# Full capability list as returned by CowCraft's connect (161 entries)
+# Full capability list as returned by CowCraft's connect (163 entries)
 CAPABILITIES = [
     "characters", "create", "delete_character", "select", "observe",
     "move", "target", "attack", "attack_stop", "cast", "interact",
@@ -28,6 +28,7 @@ CAPABILITIES = [
     "item_use", "item_equip", "item_move", "item_split", "item_destroy",
     "item_open", "item_read_lore", "object_read_lore",
     "navigation_probe", "path_preview", "terrain_map",
+    "terrain_detail", "zone_map",
     "item_equip_slot", "set_ammo", "action_button",
     "bank_open", "bank_list", "bank_buy_slot", "bank_deposit", "bank_withdraw",
     "mail_list", "mail_mark_read", "mail_take_item", "mail_take_money",
@@ -403,6 +404,8 @@ ACTION_SCHEMAS = {
     "path_preview": {"required": ["kind", "x", "y", "z"],
                      "params": {"x": "number", "y": "number", "z": "number"}},
     "terrain_map": {"required": ["kind"], "params": {}},
+    "terrain_detail": {"required": ["kind"], "params": {}},
+    "zone_map": {"required": ["kind"], "params": {}},
 
     # -- meta (not game actions; handled by gateway) --
     "characters": {"required": ["kind"], "params": {}},

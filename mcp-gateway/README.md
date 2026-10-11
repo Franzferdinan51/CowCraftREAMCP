@@ -59,9 +59,12 @@ Prefer `mcp_gateway.py` as the entry point — it selects the backend from
   instance (SOAP/RA console, native module, or headless-client farm), then
   `export BACKEND=live`.
 
-## Tools added for server 0.3.16
+## Tools added through server 0.3.18
 
-The catalog is 15 tools. `resume` and `observe_map` are the additions.
+The catalog is 17 tools. `resume` and `observe_map` arrived in 0.3.16.
+`observe_terrain_detail` and `observe_zone_map` arrived in 0.3.18 and share
+the five-second picture quota with `observe_map`. Action kinds added with
+them are `terrain_detail` and `zone_map`.
 Action kinds added with them: `navigation_probe`, `path_preview`,
 `terrain_map`, `item_open`, `item_read_lore`, and `object_read_lore`.
 Call them through the proxy, or on the direct client in `cowcraft_mcp.py`.

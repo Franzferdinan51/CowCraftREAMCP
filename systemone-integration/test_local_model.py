@@ -44,9 +44,10 @@ class LocalModelTest(unittest.TestCase):
         state = {
             "self": {"name": "Ada", "hp": 40, "money": {"copper": 3}},
             "nearby_units": [
-                {"name": "Young Wolf", "faction": 32, "hostile": False, "dead": False},
+                {"name": "Young Wolf", "faction": 12, "npc_flags": 4, "hostile": None, "dead": False},
                 {"name": "Rabbit", "faction": 31, "hostile": False, "dead": False},
-                {"name": "Dead Wolf", "faction": 32, "dead": True},
+                {"name": "Dead Wolf", "faction": 14, "dead": True},
+                {"name": "Zzax", "faction": 14, "hostile": None, "dead": False},
                 {"name": "Boar", "hostile": True, "faction": 14, "dead": False},
             ],
             "quests": ["bring back a long quest text"],
@@ -54,8 +55,9 @@ class LocalModelTest(unittest.TestCase):
         }
         text = bounded_world_summary(state, limit=600)
         self.assertIn("Ada", text)
-        self.assertIn("Young Wolf", text)
+        self.assertIn("Zzax", text)
         self.assertIn("Boar", text)
+        self.assertNotIn("Young Wolf", text)
         self.assertIn("gold=0g 0s 3c (3 copper)", text)
         self.assertNotIn("{'copper'", text)
         self.assertNotIn("Rabbit", text)

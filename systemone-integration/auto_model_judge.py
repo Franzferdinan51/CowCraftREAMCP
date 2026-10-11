@@ -21,6 +21,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -67,13 +68,15 @@ def bounded_world_summary(state, limit=600):
     from cowcraft_env import format_self_stats
     state = state if isinstance(state, dict) else {}
     parts = [format_self_stats(state)]
+    gateway = os.path.join(os.path.dirname(__file__), "..", "mcp-gateway")
+    if gateway not in sys.path:
+        sys.path.insert(0, gateway)
+    from cowcraft_world import is_attackable
     hostiles = []
     units = state.get("nearby_units") or []
     if isinstance(units, list):
         for unit in units:
-            if not isinstance(unit, dict) or unit.get("dead"):
-                continue
-            if unit.get("hostile") is True or unit.get("faction") == 32:
+            if isinstance(unit, dict) and is_attackable(unit):
                 hostiles.append(str(unit.get("name") or "hostile"))
     if hostiles:
         parts.append("hostiles " + ", ".join(hostiles))

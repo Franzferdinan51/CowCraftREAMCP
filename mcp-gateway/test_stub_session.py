@@ -64,15 +64,17 @@ class StubSessionTest(unittest.TestCase):
         self.assertIsInstance(listed, dict)
         names = [item["name"] for item in listed["tools"]]
         self.assertEqual(names, tool_names())
-        self.assertEqual(len(names), 15)
+        self.assertEqual(len(names), 17)
         self.assertIn("resume", names)
         self.assertIn("observe_map", names)
+        self.assertIn("observe_terrain_detail", names)
+        self.assertIn("observe_zone_map", names)
         for required in ("stop", "disconnect"):
             tool = next(item for item in listed["tools"] if item["name"] == required)
             schema = tool["inputSchema"]
             self.assertIn("connection", schema["properties"])
             self.assertIn("connection", schema["required"])
-        print("SESSION tools/list is one object naming all 15 tools")
+        print("SESSION tools/list is one object naming all 17 tools")
 
         token = client.connect(label)
         self.assertIsNotNone(TOKEN_RE.fullmatch(token))

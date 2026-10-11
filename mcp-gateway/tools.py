@@ -1,7 +1,7 @@
 """
 MCP tool definitions for the Minta gateway.
 
-15 tools, mirroring CowCraft's tools/list (server 0.3.16). Each entry: name, description,
+17 tools, mirroring CowCraft's tools/list (server 0.3.18). Each entry: name, description,
 inputSchema (JSON Schema). The gateway in gateway.py dispatches on these.
 """
 
@@ -196,6 +196,35 @@ TOOLS = [
             "and it also uses the 1/second navigation-read slot shared with "
             "navigation_probe, path_preview, and terrain_map. Not a screenshot. "
             "Ordinary observe stays independent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"connection": {"type": "string"}},
+            "required": ["connection"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "observe_terrain_detail",
+        "description": (
+            "Optional forward terrain schematic. Visible ground over 120 "
+            "degrees, every 2 yards out to 60 yards. Shares the five-second "
+            "picture quota and the one-second navigation read. Not a "
+            "screenshot or a verified route."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"connection": {"type": "string"}},
+            "required": ["connection"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "observe_zone_map",
+        "description": (
+            "Zone map image with this character's position and heading. "
+            "Only explored overlays are revealed. Shares the five-second "
+            "picture quota and the one-second navigation read."
         ),
         "inputSchema": {
             "type": "object",
