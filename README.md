@@ -61,6 +61,7 @@ export MINTA_USERNAME='your-account'
 export MINTA_PASSWORD='...'
 export MINTA_GATEWAY_URL=http://127.0.0.1:8901/mcp
 python3 scripts/wow.py observe --character Yourchar
+python3 scripts/wow.py stats --character Yourchar
 python3 scripts/wow.py move --character Yourchar --dir north --steps 2
 python3 scripts/wow.py attack --character Yourchar
 python3 scripts/wow.py loot --character Yourchar
@@ -72,7 +73,11 @@ python3 scripts/wow.py stop --character Yourchar
 when current power can pay for it. Spell names `attack` and `shoot` are
 skipped. The client does not invent spell ids. `loot` opens the corpse,
 reads the `ui` section, takes listed slots and any money, then closes.
-`stop` sends `attack_stop`.
+`stop` sends `attack_stop`. `stats` prints the character's own gold, level,
+hp, power, map, and position. Gold from `self.money` is shown as
+`0g 1s 15c (115 copper)`. The same line is included in every bot tick, so
+the model can read its purse without a separate request. `stats` as an
+action stands in place and refreshes that line.
 
 ## Headless bot
 
@@ -206,7 +211,7 @@ Vendor sell is `vendor_sell` with `guid`, `item_guid`, and `count`.
 
 1. If `d1-3b` or `d1-omni-600m` is already loaded in LM Studio, each one is asked what the character could do and what it could use.
 2. The text is prefixed `Decision advice, not required.`
-3. The first loaded model that is neither of those ids is the main model. Its reply is the action: `move_north`, `move_south`, `move_east`, `move_west`, `attack`, `cast`, `stop`, `interact`, `loot`, or `wait`.
+3. The first loaded model that is neither of those ids is the main model. Its reply is the action: `move_north`, `move_south`, `move_east`, `move_west`, `attack`, `cast`, `stop`, `interact`, `loot`, `stats`, or `wait`. `stats` reads the purse and the rest of self.
 4. No main model, an empty model list, or a reply that is not one of those words becomes `wait`. Advice is never promoted to a move.
 5. This code does not load a model. `PREFER_MODEL` is ignored.
 

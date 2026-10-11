@@ -16,7 +16,7 @@ from auto_model_judge import (  # noqa: E402
     prompt_with_advice,
 )
 from judge import build_questions, choice_criteria, decision_payload  # noqa: E402
-from cowcraft_env import ACTIONS  # noqa: E402
+from cowcraft_env import ACTIONS, format_gold, format_self_stats  # noqa: E402
 
 
 class LocalModelTest(unittest.TestCase):
@@ -56,7 +56,8 @@ class LocalModelTest(unittest.TestCase):
         self.assertIn("Ada", text)
         self.assertIn("Young Wolf", text)
         self.assertIn("Boar", text)
-        self.assertIn("copper", text)
+        self.assertIn("gold=0g 0s 3c (3 copper)", text)
+        self.assertNotIn("{'copper'", text)
         self.assertNotIn("Rabbit", text)
         self.assertNotIn("Dead Wolf", text)
         self.assertNotIn("quest", text.lower())
@@ -67,6 +68,25 @@ class LocalModelTest(unittest.TestCase):
             limit=600,
         )
         self.assertLessEqual(len(huge), 600)
+        live = {
+            "self": {
+                "name": "Ada", "level": 2, "health": 68, "max_health": 68,
+                "power": 15, "max_power": 100, "power_type": "rage",
+                "map": "Elwynn", "x": -8894.6, "y": -117.8, "z": 81.9,
+                "money": {"gold": 1, "silver": 2, "copper": 3},
+                "combat": True,
+            }
+        }
+        line = format_self_stats(live)
+        self.assertIn("level=2", line)
+        self.assertIn("hp=68/68", line)
+        self.assertIn("power=15/100 rage", line)
+        self.assertIn("gold=1g 2s 3c (10203 copper)", line)
+        self.assertIn("combat", line)
+        self.assertEqual(format_gold({"self": {"money": 115}}), "gold=0g 1s 15c (115 copper)")
+        self.assertEqual(format_gold({"self": {"money": 0}}), "gold=0g 0s 0c (0 copper)")
+        self.assertEqual(format_gold({"self": {"name": "Ada"}}), "gold=missing")
+        self.assertIn("stats", ACTIONS)
         print("LOCAL summary listed self, hostiles, and money inside 600 characters")
 
     def test_decision_advice_does_not_choose_the_action(self):

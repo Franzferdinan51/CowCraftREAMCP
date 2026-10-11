@@ -43,6 +43,7 @@ ACTIONS = [
     "stop",
     "interact",
     "loot",
+    "stats",
     "wait",
 ]
 
@@ -122,6 +123,94 @@ def as_int_money(value):
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
     return value
+
+
+def as_int_stat(value):
+    """Integer from a live stat field. None when the field is absent."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return int(value)
+    return None
+
+
+def money_purse(state):
+    """Gold, silver, copper, and total copper from an observe body.
+
+    Reads self.money (dict or total copper), then self.gold/silver/copper.
+    Returns None when the observe did not include a purse.
+    """
+    state = state if isinstance(state, dict) else {}
+    me = state.get("self") if isinstance(state.get("self"), dict) else {}
+    money = me.get("money", state.get("money"))
+    if isinstance(money, str) and money.strip():
+        return money.strip()
+    gold = silver = copper = None
+    if isinstance(money, dict):
+        gold = as_int_stat(money.get("gold"))
+        silver = as_int_stat(money.get("silver"))
+        copper = as_int_stat(money.get("copper"))
+    elif as_int_stat(money) is not None:
+        total = as_int_stat(money)
+        gold, silver, copper = total // 10000, (total % 10000) // 100, total % 100
+    else:
+        gold = as_int_stat(me.get("gold"))
+        silver = as_int_stat(me.get("silver"))
+        copper = as_int_stat(me.get("copper"))
+    if gold is None and silver is None and copper is None:
+        return None
+    gold = 0 if gold is None else gold
+    silver = 0 if silver is None else silver
+    copper = 0 if copper is None else copper
+    total = gold * 10000 + silver * 100 + copper
+    return gold, silver, copper, total
+
+
+def format_gold(state):
+    """Readable purse. Zero is 0g 0s 0c. A missing purse says gold=missing."""
+    purse = money_purse(state)
+    if purse is None:
+        return "gold=missing"
+    if isinstance(purse, str):
+        return "gold=%s" % purse
+    gold, silver, copper, total = purse
+    return "gold=%dg %ds %dc (%d copper)" % (gold, silver, copper, total)
+
+
+def format_self_stats(state):
+    """One line of the character's own stats, including gold."""
+    state = state if isinstance(state, dict) else {}
+    me = state.get("self") if isinstance(state.get("self"), dict) else {}
+    parts = ["self name=%s" % (me.get("name") or "")]
+    if me.get("level") not in (None, ""):
+        parts.append("level=%s" % me.get("level"))
+    hp = me.get("health", me.get("hp", ""))
+    max_hp = me.get("max_health", me.get("max_hp", ""))
+    parts.append("hp=%s/%s" % (hp, max_hp))
+    power = me.get("power", me.get("rage", me.get("mana", "")))
+    max_power = me.get("max_power", me.get("max_rage", me.get("max_mana", "")))
+    if power not in ("", None) or max_power not in ("", None):
+        kind = me.get("power_type") or ""
+        parts.append("power=%s/%s%s" % (power, max_power, (" " + str(kind)) if kind else ""))
+    map_name = me.get("map") or me.get("zone") or ""
+    if map_name:
+        parts.append("map=%s" % map_name)
+    try:
+        parts.append("pos=(%.1f,%.1f,%.1f)" % (float(me["x"]), float(me["y"]), float(me["z"])))
+    except (KeyError, TypeError, ValueError):
+        pass
+    parts.append(format_gold(state))
+    flags = []
+    for key in ("combat", "dead", "ghost", "stuck", "moving"):
+        if me.get(key):
+            flags.append(key)
+    if flags:
+        parts.append(" ".join(flags))
+    return " ".join(parts)
 
 
 def loot_window(state):
@@ -292,7 +381,8 @@ class CowCraftEnv:
         time.sleep(0.6)  # let the world tick; gateway caps observe at 1/s
         self._refresh()
         moved = math.dist(self._pos[:2], before[:2])
-        progressed = moved > 0.5 or action in ("attack", "cast", "interact", "loot", "stop")
+        progressed = moved > 0.5 or action in (
+            "attack", "cast", "interact", "loot", "stop", "stats")
         return ActResult(progressed=progressed, info={"action": action, "moved": round(moved, 2)})
 
     # -- internals -------------------------------------------------------
@@ -432,6 +522,8 @@ class CowCraftEnv:
                 for slot in slots:
                     self.game.action("loot_take", {"slot": slot})
                 self.game.action("loot_close", {"guid": guid})
+        elif action == "stats":
+            pass
         elif action == "wait":
             time.sleep(1.0)
         else:
@@ -442,8 +534,8 @@ class CowCraftEnv:
         x, y, z = self._pos
         hp, max_hp = self._hp
         lines = [
-            f"role={self.role} name={self.character_name} "
-            f"pos=({x:.1f},{y:.1f},{z:.1f}) hp={hp}/{max_hp}"
+            "role=%s %s" % (self.role, format_self_stats(self.state)),
+            "tracked pos=(%.1f,%.1f,%.1f) hp=%s/%s" % (x, y, z, hp, max_hp),
         ]
         units = self.state.get("nearby_units", [])
         if units:

@@ -24,7 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "systemone-integration"))
 
-from cowcraft_env import CowCraftEnv  # noqa: E402
+from cowcraft_env import CowCraftEnv, format_self_stats  # noqa: E402
 
 
 def make_env(character):
@@ -41,7 +41,15 @@ def cmd_observe(args):
     env = make_env(args.character)
     env.connect()
     obs = env.observe()
+    print(format_self_stats(obs.info))
     print(obs.text)
+
+
+def cmd_stats(args):
+    env = make_env(args.character)
+    env.connect()
+    obs = env.observe()
+    print(format_self_stats(obs.info))
 
 
 def cmd_move(args):
@@ -74,6 +82,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("observe", help="print current observation")
+    sub.add_parser("stats", help="print own gold, hp, power, and position")
 
     p_move = sub.add_parser("move", help="move cardinally")
     p_move.add_argument("--dir", required=True, choices=["north", "south", "east", "west"])
@@ -88,6 +97,8 @@ def main():
     args = ap.parse_args()
     if args.cmd == "observe":
         cmd_observe(args)
+    elif args.cmd == "stats":
+        cmd_stats(args)
     elif args.cmd == "move":
         cmd_move(args)
     else:

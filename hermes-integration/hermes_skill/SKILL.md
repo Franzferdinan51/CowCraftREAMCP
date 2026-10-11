@@ -52,7 +52,7 @@ The gateway's `initialize` result includes `instructions`. Follow that order:
 4. `observe`, then act. Observe and heartbeat share one call per second. `observe_map` is at most once every 5 seconds. `navigation_probe`, `path_preview`, and `terrain_map` share one call per second and do not move the character. Send `events_ack` only for events you have already processed. Confirm the action with a new observe. Attack casts a spell the server listed when power can pay for it. Loot opens the body, observes the ui section, takes the listed slots and any money, then closes.
 5. `disconnect` when finished.
 
-`bot_mode.py` performs this sequence before the local model chooses a move. The model only sees a short summary of self, nearby hostiles, and money.
+`bot_mode.py` performs this sequence before the local model chooses a move. The model sees a short summary of self stats, including gold as `Ng Ns Nc (total copper)`, plus nearby hostiles.
 
 ## Quick commands
 
@@ -61,6 +61,9 @@ All examples use `scripts/wow.py` (in this skill's `scripts/` folder).
 ```bash
 # Where am I / what's around me
 python3 scripts/wow.py observe --character Quacksmash
+
+# Own gold, hp, power, level, and position
+python3 scripts/wow.py stats --character Quacksmash
 
 # Move (cardinal step of ~6 world units)
 python3 scripts/wow.py move --character Quacksmash --dir north
@@ -90,6 +93,7 @@ Translate the user's intent into the discrete action set:
 | "talk to him / use that / pick up quest" | `interact` |
 | "stop / hold / wait" | `stop` or `wait` |
 | "what do you see / status" | `observe` (summarize: HP, position, nearby units/objects) |
+| "how much gold / check my stats" | `stats` (gold as Ng Ns Nc and total copper, plus level, hp, power, map, position) |
 
 After every 2–3 actions, run `observe` again and report back what changed.
 Never claim movement succeeded without a fresh `observe` confirming the new

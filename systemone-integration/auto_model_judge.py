@@ -34,7 +34,7 @@ MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "4"))
 
 VALID_ACTIONS = [
     "move_north", "move_south", "move_east", "move_west",
-    "attack", "cast", "stop", "interact", "loot", "wait",
+    "attack", "cast", "stop", "interact", "loot", "stats", "wait",
 ]
 
 
@@ -63,13 +63,10 @@ def choose_action(loaded_models, reply, valid_actions=None, load_log=None):
 
 
 def bounded_world_summary(state, limit=600):
-    """Short self / hostile / money text. Quests and objects are left out."""
+    """Short self stats, gold, and hostiles. Quests and objects are left out."""
+    from cowcraft_env import format_self_stats
     state = state if isinstance(state, dict) else {}
-    me = state.get("self") if isinstance(state.get("self"), dict) else {}
-    name = me.get("name", "")
-    hp = me.get("hp", me.get("health", ""))
-    money = me.get("money", state.get("money", ""))
-    parts = ["self name=%s hp=%s money=%s" % (name, hp, money)]
+    parts = [format_self_stats(state)]
     hostiles = []
     units = state.get("nearby_units") or []
     if isinstance(units, list):

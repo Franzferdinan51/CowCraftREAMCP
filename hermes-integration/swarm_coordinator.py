@@ -273,7 +273,7 @@ class Coordinator:
                 for (agent, obs), (action, conf, _m) in zip(order, results):
                     if conf < 0.35 or action not in (
                             "move_north", "move_south", "move_east", "move_west",
-                            "attack", "stop", "interact", "loot", "wait"):
+                            "attack", "cast", "stop", "interact", "loot", "stats", "wait"):
                         action = "wait"
                     try:
                         result = agent.env.act(action)

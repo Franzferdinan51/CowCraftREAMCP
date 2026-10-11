@@ -52,14 +52,14 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "systemone-integration"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp-gateway"))
 
-from cowcraft_env import CowCraftEnv  # noqa: E402
+from cowcraft_env import CowCraftEnv, format_self_stats  # noqa: E402
 from auto_model_judge import AutoModelJudge, bounded_world_summary  # noqa: E402
 from cowcraft_mcp import account_state_paths  # noqa: E402
 from recorder import TickLogger, recording_enabled, training_log_path  # noqa: E402
 
 VALID_ACTIONS = [
     "move_north", "move_south", "move_east", "move_west",
-    "attack", "cast", "stop", "interact", "loot", "wait",
+    "attack", "cast", "stop", "interact", "loot", "stats", "wait",
 ]
 
 _stop = threading.Event()
@@ -223,9 +223,10 @@ def run_bot(cfg):
                     f"tick {tick}: saw {obs.text.splitlines()[0][:70] if obs.text else '?'} "
                     f"| chose {action} ({conf:.2f}) | "
                     f"{'progressed' if result.progressed else 'no progress'}")
-                logger.info("tick %d: %s conf=%.2f %s advice=%s", tick, action, conf,
+                logger.info("tick %d: %s conf=%.2f %s advice=%s | %s", tick, action, conf,
                             "ok" if result.progressed else "--",
-                            "none" if not advice.get("text") else "optional")
+                            "none" if not advice.get("text") else "optional",
+                            format_self_stats(getattr(obs, "info", {}) or {}))
                 _health.update(tick=tick, last_action=action, last_error=None,
                                uptime_s=int(time.time() - started))
                 tick += 1
