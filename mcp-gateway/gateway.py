@@ -60,6 +60,10 @@ backend = get_backend()
 # per-account serial lock: one in-flight request per account at a time
 _account_locks = {}
 _account_locks_guard = threading.Lock()
+# (account, guid) -> model_name from the connect that first selected it.
+# Upstream agent-bind has no unbind; a different label is rejected once.
+_agent_binds = {}
+_agent_binds_lock = threading.Lock()
 
 
 def account_lock(username):
@@ -233,12 +237,26 @@ def tool_select_character(args):
         lease.touch()
         return game_error("invalid_arguments",
                           "guid must be a JSON number, not a string")
+    # connect's model_name is the agent label. The first successful select
+    # binds the character to that exact string. Upstream has no unbind.
+    key = (lease.account.lower(), guid)
+    with _agent_binds_lock:
+        bound = _agent_binds.get(key)
+    if bound is not None and bound != lease.model_name:
+        lease.touch()
+        return game_error(
+            "benchmark_selection_rejected",
+            "character is permanently agent-bound to a different model; "
+            "upstream provides no unbind",
+        )
     try:
         with account_lock(lease.account):
             result = backend.enter_world(lease.account, guid)
     except BackendError as e:
         lease.touch()
         return game_error(e.code, e.message)
+    with _agent_binds_lock:
+        _agent_binds.setdefault(key, lease.model_name)
     leases.bind_character(lease, guid)
     return ok_result(result)
 

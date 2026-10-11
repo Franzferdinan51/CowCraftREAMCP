@@ -6,13 +6,16 @@ CowCraftBackend(WoWBackend) holds one upstream CowCraft MCP session per
 account and forwards every gateway call to https://cowcraft.world/mcp via
 the vendored cowcraft_mcp client.
 
-Resilience (from reverse-engineering cowcraft.world):
-- stale-lease cleanup: force-disconnect the old upstream token before
-  every reconnect (CowCraft never reaps dead leases; without this the
-  account stays `account_busy` for 1+ hour)
-- transport retries: exponential backoff (1s/2s/4s) on IncompleteRead,
-  connection drops, and `rate_limited`
-- `account_busy`: kill stale token -> wait -> fresh connect -> retry once
+Resilience lives in cowcraft_mcp (one policy for this proxy and direct
+clients):
+- stale-lease cleanup disconnects the persisted token, never a token this
+  call is about to issue
+- transport retries: exponential backoff on IncompleteRead and
+  RemoteDisconnected (three failures stop)
+- account_busy is not rate_limited: release the saved token, then wait
+- login is sent at most once per 60 seconds; rate_limited honors
+  retry_after_ms and waits longer than a transport retry
+- observe and heartbeat share one call per second
 - reconnect cooldown: max 1 reconnect per 10s per account (no hammering)
 - idle reaping: upstream sessions idle > 10 min are released
 - per-account RLock: serial upstream calls even under gateway threading
@@ -33,7 +36,12 @@ import threading
 import time
 
 from backend import WoWBackend, BackendError  # noqa: E402
-from cowcraft_mcp import CowCraft, CowCraftError  # noqa: E402
+from cowcraft_mcp import (  # noqa: E402
+    CowCraft,
+    CowCraftError,
+    classify_failure,
+    transport_backoff_seconds,
+)
 
 UPSTREAM_URL = os.environ.get(
     "MINTA_COWCRAFT_URL", "https://cowcraft.world/mcp"
@@ -42,23 +50,19 @@ LOG_PATH = os.environ.get("MINTA_COWCRAFT_LOG")  # optional json-lines log
 
 RECONNECT_COOLDOWN = 10.0   # seconds between reconnects per account
 IDLE_REAP_AFTER = 600.0     # release upstream session after 10 min idle
-BACKOFFS = (1.0, 2.0, 4.0)  # retry delays on transport failure
 
 
-def _is_transport_error(exc):
-    msg = str(exc).lower()
-    return any(k in msg for k in (
-        "incompleteread", "connection", "closed", "timeout",
-        "temporarily", "rate_limited", "remote end",
-    ))
+def proxy_transport_delay(attempt):
+    """Same curve the client uses between IncompleteRead / RemoteDisconnected."""
+    return transport_backoff_seconds(attempt)
 
 
 class _Session:
     """One upstream CowCraft session for one account."""
 
-    def __init__(self, username):
+    def __init__(self, username, client_factory):
         self.username = username
-        self.game = CowCraft(url=UPSTREAM_URL)
+        self.game = client_factory()
         self.lock = threading.RLock()
         self.password = None
         self.connected = False
@@ -74,7 +78,10 @@ class _Session:
 class CowCraftBackend(WoWBackend):
     """WoWBackend that proxies to the real CowCraft MCP server."""
 
-    def __init__(self):
+    def __init__(self, client_factory=None):
+        self._client_factory = client_factory or (
+            lambda: CowCraft(url=UPSTREAM_URL)
+        )
         self._sessions = {}
         self._guard = threading.Lock()
         self._log_lock = threading.Lock()
@@ -85,7 +92,7 @@ class CowCraftBackend(WoWBackend):
         with self._guard:
             s = self._sessions.get(key)
             if s is None:
-                s = _Session(username)
+                s = _Session(username, self._client_factory)
                 self._sessions[key] = s
             return s
 
@@ -118,12 +125,10 @@ class CowCraftBackend(WoWBackend):
             raise BackendError("rate_limited",
                                "reconnect cooldown; try again shortly")
         s.last_reconnect = time.time()
-        # stale-lease cleanup first: CowCraft never reaps dead leases
+        # Drop a persisted prior lease. Never disconnect the token connect()
+        # is about to issue — that token does not hold the old account lease.
         try:
-            s.game.disconnect()
-        except Exception:
-            pass
-        try:
+            s.game.release_saved_lease()
             s.game.connect(f"minta-proxy-{s.username}")
             if not s.password:
                 raise BackendError("not_authenticated",
@@ -132,17 +137,25 @@ class CowCraftBackend(WoWBackend):
         except CowCraftError as exc:
             s.errors += 1
             s.last_error = str(exc)[:200]
+            if classify_failure(exc.code) == "account_busy":
+                raise BackendError("account_busy", str(exc)[:200])
             raise BackendError("upstream_error", str(exc)[:200])
         s.connected = True
         s.last_use = time.time()
         return True
 
     def _call(self, s, op, fn, *args, **kwargs):
-        """Run fn with retries on transport failure / account_busy."""
+        """Run fn once. Transport backoff and login clocks live on the client.
+
+        A transport failure that still escapes the client waits on the shared
+        backoff curve and is tried once more. account_busy is not retried
+        here and is not classified as rate_limited: the client already
+        released the persisted token when it was a different lease.
+        """
         last_exc = None
-        for attempt, delay in enumerate([0.0] + list(BACKOFFS)):
-            if delay:
-                time.sleep(delay)
+        for attempt in range(2):
+            if attempt:
+                time.sleep(proxy_transport_delay(attempt - 1))
             with s.lock:
                 try:
                     self._ensure_connected(s)
@@ -158,17 +171,11 @@ class CowCraftBackend(WoWBackend):
                     s.errors += 1
                     s.last_error = msg[:200]
                     self._log(s.username, op, False, msg)
-                    if "account_busy" in msg.lower() and attempt == 0:
-                        # kill the ghost lease and retry once
-                        try:
-                            s.game.disconnect()
-                        except Exception:
-                            pass
+                    kind = classify_failure(exc.code)
+                    if kind == "account_busy":
+                        raise BackendError("account_busy", msg[:200])
+                    if kind == "transport" and attempt == 0:
                         s.connected = False
-                        last_exc = exc
-                        continue
-                    if _is_transport_error(exc):
-                        s.connected = False  # force reconnect next try
                         last_exc = exc
                         continue
                     raise BackendError("upstream_error", msg[:200])
@@ -185,7 +192,7 @@ class CowCraftBackend(WoWBackend):
                 if e.code != "not_authenticated":
                     raise
                 # register needs no prior login: use a bare client
-                game = CowCraft(url=UPSTREAM_URL)
+                game = self._client_factory()
                 try:
                     game.connect(f"minta-proxy-reg-{username}")
                     out = self._call_raw(game, "register",
@@ -219,15 +226,21 @@ class CowCraftBackend(WoWBackend):
         s = self._session(username)
         name = character.get("name", username)
         char_class = int(character.get("class", character.get("char_class", 1)))
+        race = character.get("race", 1)
+        try:
+            race = int(race)
+        except (TypeError, ValueError):
+            race = 0
         return self._call(
             s, "create_character",
-            lambda: s.game.create_character(name, char_class=char_class))
+            lambda: s.game.create_character(
+                name, char_class=char_class, race=race))
 
     def delete_character(self, username, guid, confirm_name):
         s = self._session(username)
         return self._call(
             s, "delete_character",
-            lambda: s.game.delete_character(int(guid)))
+            lambda: s.game.delete_character(int(guid), confirm_name))
 
     def enter_world(self, username, character_guid):
         s = self._session(username)

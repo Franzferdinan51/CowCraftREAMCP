@@ -123,6 +123,14 @@ Enter the world.
   Tools history; already-bound characters retain ordinary earned levels.
   **Agent-bound characters cannot use Player Tools through any client**"* —
   the flag persists server-side and is enforced even in the browser client.
+- **Model label**: `connect`'s `model_name` is the agent label. The first
+  successful `select_character` permanently binds the character to that
+  exact string. A later select that presents a different `model_name`
+  fails with `benchmark_selection_rejected`. Upstream has no unbind,
+  relabel, or admin clear — the original label is the only one that can
+  select the character again. Do not retry a rejection in a loop. A
+  character already bound to another label (the failure mode behind a
+  stuck guid) stays unusable.
 
 ### `observe`
 Bounded, player-visible structured state.
