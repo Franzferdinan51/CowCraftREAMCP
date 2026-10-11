@@ -636,6 +636,124 @@ class ProxyLeaseTest(unittest.TestCase):
             self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
         print("PROXY observe forwarded spell_limit and the ui section")
 
+    def test_proxy_login_twice_inside_ten_seconds_keeps_the_session(self):
+        password = harness.fixture_secret()
+        issued = "fresh-issued-token"
+        clock = harness.ManualClock()
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = os.path.join(tmp, "conn.txt")
+            backend, transport = self._proxy(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": issued}),
+                    harness.tool_result({
+                        "username": "ada",
+                        "state": "character_selection",
+                        "lease": {"state": "character_selection"},
+                    }),
+                    harness.tool_result({"self": {"money": {"copper": 4}}}),
+                ],
+                token_path,
+                os.path.join(tmp, "model.txt"),
+                clock=clock,
+            )
+            first = backend.login("ada", password, agent_label="ada")
+            second = backend.login("ada", password, agent_label="ada")
+            observed = backend.observe("ada")
+            self.assertEqual(first["state"], "character_selection")
+            self.assertEqual(second["state"], "character_selection")
+            self.assertNotEqual(getattr(second, "code", None), "rate_limited")
+            self.assertEqual(observed["self"]["money"]["copper"], 4)
+            self.assertEqual(len(harness.named(transport.payloads, "login")), 1)
+            self.assertEqual(load_connection_token(token_path), issued)
+            self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+        print("PROXY a second login inside 10s left the session usable")
+
+    def test_proxy_busy_retry_sends_login_inside_ten_seconds(self):
+        password = harness.fixture_secret()
+        clock = harness.ManualClock()
+        with tempfile.TemporaryDirectory() as tmp:
+            backend, transport = self._proxy(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": "busy-token"}),
+                    harness.tool_result({
+                        "error": {
+                            "code": "account_busy",
+                            "message": "This account already has a direct agent lease",
+                        },
+                    }),
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": "retry-token"}),
+                    harness.tool_result({
+                        "username": "ada",
+                        "state": "character_selection",
+                        "lease": {"state": "character_selection"},
+                    }),
+                ],
+                os.path.join(tmp, "conn.txt"),
+                os.path.join(tmp, "model.txt"),
+                clock=clock,
+            )
+            with self.assertRaises(BackendError) as caught:
+                backend.login("ada", password, agent_label="ada")
+            self.assertEqual(caught.exception.code, "account_busy")
+            self.assertNotEqual(caught.exception.code, "rate_limited")
+            body = backend.login("ada", password, agent_label="ada")
+            self.assertEqual(body["state"], "character_selection")
+            self.assertNotEqual(getattr(body, "code", None), "rate_limited")
+            self.assertEqual(len(harness.named(transport.payloads, "login")), 2)
+            self.assertTrue(all("cowcraft.world" not in url for url in transport.urls))
+        print("PROXY account_busy retry sent the login inside 10 seconds")
+
+    def test_proxy_leave_world_reports_upstream_disconnect(self):
+        password = harness.fixture_secret()
+        issued = "leave-token"
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = os.path.join(tmp, "conn.txt")
+            backend, transport = self._proxy(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": issued}),
+                    harness.tool_result({
+                        "username": "ada",
+                        "state": "character_selection",
+                    }),
+                    harness.tool_result({"disconnected": False}),
+                ],
+                token_path,
+                os.path.join(tmp, "model.txt"),
+            )
+            backend.login("ada", password)
+            failed = backend.leave_world("ada")
+            self.assertIs(failed.get("disconnected"), False)
+            self.assertIs(failed.get("left"), False)
+            self.assertEqual(load_connection_token(token_path), issued)
+            self.assertEqual(len(harness.named(transport.payloads, "disconnect")), 1)
+
+        issued = "leave-token-ok"
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = os.path.join(tmp, "conn.txt")
+            backend, _transport = self._proxy(
+                [
+                    harness.rpc_result({"protocolVersion": "2024-11-05"}),
+                    harness.tool_result({"connection": issued}),
+                    harness.tool_result({
+                        "username": "ada",
+                        "state": "character_selection",
+                    }),
+                    harness.tool_result({"disconnected": True}),
+                ],
+                token_path,
+                os.path.join(tmp, "model.txt"),
+            )
+            backend.login("ada", password)
+            released = backend.leave_world("ada")
+            self.assertIs(released.get("disconnected"), True)
+            self.assertIs(released.get("left"), True)
+            self.assertIsNone(load_connection_token(token_path))
+        print("PROXY leave_world returned the upstream disconnect result")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

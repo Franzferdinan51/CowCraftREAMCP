@@ -123,17 +123,23 @@ class CowCraftBackend(WoWBackend):
             s.connected = False
             s.in_world = False
 
-    def _ensure_connected(self, s, password=None):
-        """Return True if the upstream session is usable."""
+    def _ensure_connected(self, s, password=None, explicit_login=False):
+        """Return True if the upstream session is usable.
+
+        explicit_login is the caller asking to sign in. It is not a
+        reconnect, so the 10s cooldown does not apply and does not get
+        labeled rate_limited. Automatic reconnects still wait.
+        """
         if password:
             s.password = password
         self._reap_if_idle(s)
         if s.connected:
             return True
-        if time.time() - s.last_reconnect < RECONNECT_COOLDOWN:
+        if not explicit_login and time.time() - s.last_reconnect < RECONNECT_COOLDOWN:
             raise BackendError("rate_limited",
                                "reconnect cooldown; try again shortly")
-        s.last_reconnect = time.time()
+        if not explicit_login:
+            s.last_reconnect = time.time()
         # Drop a persisted prior lease for this account only. Never disconnect
         # the token connect() is about to issue, and never another account's.
         try:
@@ -235,8 +241,11 @@ class CowCraftBackend(WoWBackend):
         elif not s.agent_label:
             s.agent_label = username
         with s.lock:
-            s.connected = False  # force a fresh upstream login
-            self._ensure_connected(s)
+            # A session that already signed in stays usable. Forcing
+            # connected off here made the next observe look rate_limited.
+            if s.connected and s.login_body is not None:
+                return s.login_body
+            self._ensure_connected(s, explicit_login=True)
             return s.login_body
 
     def list_characters(self, username):
@@ -271,19 +280,35 @@ class CowCraftBackend(WoWBackend):
         return out
 
     def leave_world(self, username):
+        """Release the upstream lease. The result is the disconnect body.
+
+        A transport failure leaves the saved token in place and is not
+        reported as success.
+        """
         key = username.lower()
         with self._guard:
-            s = self._sessions.pop(key, None)
-        if s:
-            with s.lock:
-                try:
-                    s.game.disconnect()
-                except Exception:
-                    pass
+            s = self._sessions.get(key)
+        if s is None:
+            return {"disconnected": False, "left": False}
+        with s.lock:
+            try:
+                result = s.game.disconnect()
+            except Exception:
+                result = {"disconnected": False}
+            if not isinstance(result, dict):
+                result = {"disconnected": False}
+            released = result.get("disconnected") is True
+            if released:
                 s.connected = False
                 s.in_world = False
                 s.password = None
-        return {"left": True}
+                with self._guard:
+                    if self._sessions.get(key) is s:
+                        self._sessions.pop(key, None)
+            out = dict(result)
+            out["disconnected"] = released
+            out["left"] = released
+            return out
 
     def observe(self, username, sections=None, spell_limit=None, spell_offset=None):
         s = self._session(username)

@@ -387,12 +387,15 @@ def tool_stop(args):
 def tool_disconnect(args):
     token = args.get("connection")
     lease, _ = leases.get_lease(token) if token else (None, None)
+    upstream = None
     if lease and lease.account:
         try:
-            backend.leave_world(lease.account)
+            upstream = backend.leave_world(lease.account)
         except BackendError:
-            pass
+            upstream = {"disconnected": False}
     leases.release(token)
+    if isinstance(upstream, dict) and "disconnected" in upstream:
+        return ok_result({"disconnected": bool(upstream.get("disconnected"))})
     return ok_result({"disconnected": True})
 
 
