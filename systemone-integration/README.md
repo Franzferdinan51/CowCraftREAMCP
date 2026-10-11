@@ -54,8 +54,10 @@ Each agent entry in the swarm config takes a `model` field, passed to the
 SystemOne shim's decide call (the shim owns its registry; unknown ids are
 ignored server-side). Example split:
 
-- tank → fast small model (`d1-3b`) for quick reactions
-- scout/support → larger model for planning and coordination
+- decision model → `d1-3b`
+- fast fallback → `d1-omni-600m` when `d1-3b` is not loaded or the call fails
+
+No other model id is sent. A model that is not already loaded is not loaded.
 
 Without the shim, every agent runs the stub judge (no model calls at all).
 

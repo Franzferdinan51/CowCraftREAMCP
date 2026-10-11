@@ -18,7 +18,7 @@ Config schema (see swarm_config.example.json):
     {"name": "Junoduck", "username": "Juno", "role": "tank",
      "char_class": 1, "model": "d1-3b"},
     {"name": "Quackers", "username": "DuckCrew1", "role": "scout",
-     "char_class": 1, "model": "mimo-v2.6-distill-qwen-9b"}
+     "char_class": 1, "model": "d1-omni-600m"}
   ]
 }
 

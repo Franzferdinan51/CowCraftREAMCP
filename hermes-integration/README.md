@@ -95,7 +95,7 @@ The skill follows the Hermes SKILL.md format (frontmatter: name, description
 ## Design rules (all components)
 
 - **No new model loads.** Everything goes through `auto_model_judge`, which
-  only uses already-loaded LM Studio models (prefers D1). RAM stays safe.
+  only calls already-loaded `d1-3b`, then `d1-omni-600m`. RAM stays safe.
 - **Credentials in env vars.** `MINTA_USERNAME` / `MINTA_PASSWORD` (or
   per-agent `MINTA_PASSWORD_<NAME>`). Never in chat, never committed.
 - **Graceful degradation.** Model unreachable → `wait` instead of crashing.

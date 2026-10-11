@@ -35,11 +35,10 @@ response includes `retry_after_ms` — honor it, don't busy-loop.
 
 ## Model not responding
 
-`auto_model_judge` only uses already-loaded LM Studio models — it never
-loads new ones. If `pick_model()` returns None, LM Studio has nothing
-loaded or isn't reachable. Check `http://100.68.208.113:1234/v1/models`
-(via the Tailscale proxy). The bot falls back to `wait` rather than
-crashing.
+`auto_model_judge` calls only `d1-3b`, then `d1-omni-600m`, and only when
+that id is already loaded. It never loads a model. If neither id is in
+the LM Studio model list, the bot chooses `wait` and does not send a
+completion. Check `http://100.68.208.113:1234/v1/models`.
 
 ## Health endpoint
 

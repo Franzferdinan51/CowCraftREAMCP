@@ -24,6 +24,10 @@ import urllib.request
 import urllib.error
 
 SHIM_URL = os.environ.get("SYSTEMONE_SHIM_URL", "http://127.0.0.1:8765").rstrip("/")
+# SystemOne defaults: d1-3b decides, d1-omni-600m is the fast fallback.
+DECISION_MODEL = "d1-3b"
+FAST_MODEL = "d1-omni-600m"
+DECISION_MODELS = (DECISION_MODEL, FAST_MODEL)
 
 
 def _post(path, payload, timeout=60):
@@ -37,6 +41,62 @@ def _post(path, payload, timeout=60):
         return json.loads(resp.read().decode())
 
 
+def decision_models(requested=None):
+    """d1-3b then d1-omni-600m, or exactly one of them when pinned."""
+    if isinstance(requested, str):
+        name = requested.strip().lower()
+        for model in DECISION_MODELS:
+            if name == model:
+                return (model,)
+    return DECISION_MODELS
+
+
+def choice_criteria(question):
+    """Decide criteria: {label: description or null}.
+
+    Accepts an options list of names or {name, description} objects.
+    A list value is not a description, so it is not forwarded.
+    """
+    if not isinstance(question, dict):
+        return {}
+    criteria = {}
+    options = question.get("options")
+    if isinstance(options, list):
+        for opt in options:
+            if isinstance(opt, dict):
+                label = opt.get("name")
+                desc = opt.get("description")
+            else:
+                label, desc = opt, None
+            if isinstance(label, str) and label and label not in criteria:
+                criteria[label] = desc if isinstance(desc, str) else None
+        return criteria
+    raw = question.get("criteria")
+    if isinstance(raw, dict):
+        for label, desc in raw.items():
+            if isinstance(label, str) and label and label not in criteria:
+                if isinstance(desc, str) or desc is None:
+                    criteria[label] = desc
+    return criteria
+
+
+def decision_payload(state_text, question, model):
+    """Body for POST /v1/systemone/decide. criteria is label -> string|null."""
+    criteria = choice_criteria(question)
+    if len(criteria) < 2:
+        raise ValueError("decide needs at least two action labels")
+    return {
+        "state": state_text,
+        "instructions": (
+            "You are the brain of a World of Warcraft agent. "
+            "Pick exactly one action from the listed options."
+        ),
+        "type": "choice",
+        "criteria": criteria,
+        "model": model,
+    }
+
+
 class SystemOneShimJudge:
     """Judge backed by the SystemOne shim's /v1/systemone/decide endpoint."""
 
@@ -45,39 +105,37 @@ class SystemOneShimJudge:
         self.model = model
 
     def __call__(self, state_text, questions, images=(), videos=(), **kw):
-        # SystemOne decide takes one typed question; we send the action
-        # choice plus gates as a batch-shaped single call.
         action_q = next(
             (q for q in questions if q.get("id") == "action" or "action" in q.get("id", "")),
             questions[0] if questions else None,
         )
-        payload = {
-            "state": state_text,
-            "instructions": (
-                "You are the brain of a World of Warcraft agent. "
-                "Pick exactly one action from the listed options."
-            ),
-            "type": "choice",
-            "criteria": action_q or {},
-        }
-        if self.model:
-            payload["model"] = self.model
-        try:
-            out = _post_shim(self.shim_url, "/v1/systemone/decide", payload)
-        except Exception as exc:
-            raise RuntimeError(f"systemone shim unreachable: {exc}") from exc
-        choice = out.get("choice") or out.get("label") or "wait"
-        conf = float(out.get("confidence", 0.5))
-        answers = {
-            "action": {"choice": choice, "confidence": conf},
-            "_meta": {"backend": out.get("backend", "systemone"), "model": self.model},
-        }
-        # carry through any extra typed answers the shim returned
-        for q in questions:
-            qid = q.get("id")
-            if qid and qid != "action" and qid in out:
-                answers[qid] = out[qid]
-        return answers
+        models = decision_models(self.model)
+        last_exc = None
+        for model in models:
+            payload = decision_payload(state_text, action_q, model)
+            try:
+                out = _post_shim(self.shim_url, "/v1/systemone/decide", payload)
+            except Exception as exc:
+                last_exc = exc
+                continue
+            choice = out.get("choice") or out.get("label") or "wait"
+            try:
+                conf = float(out.get("confidence", 0.5))
+            except (TypeError, ValueError):
+                conf = 0.5
+            answers = {
+                "action": {"choice": choice, "confidence": conf},
+                "_meta": {
+                    "backend": out.get("backend", "systemone"),
+                    "model": out.get("model") or model,
+                },
+            }
+            for q in questions:
+                qid = q.get("id")
+                if qid and qid != "action" and qid in out:
+                    answers[qid] = out[qid]
+            return answers
+        raise RuntimeError(f"systemone shim unreachable: {last_exc}") from last_exc
 
 
 def _post_shim(base, path, payload, timeout=60):

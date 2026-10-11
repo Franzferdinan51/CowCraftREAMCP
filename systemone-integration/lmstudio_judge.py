@@ -2,7 +2,8 @@
 """
 lmstudio_judge.py — Judge that talks directly to LM Studio (no SystemOne shim needed).
 
-Uses the already-loaded model (e.g. d1-3b) via the LM Studio OpenAI-compatible API.
+Uses an already-loaded decision model via the LM Studio OpenAI-compatible API.
+The decision model is d1-3b. The fast fallback is d1-omni-600m.
 Respects the user's constraint: never triggers new model loads.
 
     LMSTUDIO_URL=http://100.68.208.113:1234 python3 lmstudio_judge.py
@@ -20,6 +21,7 @@ import subprocess
 
 LM_URL = os.environ.get("LMSTUDIO_URL", "http://100.68.208.113:1234").rstrip("/")
 MODEL = os.environ.get("LMSTUDIO_MODEL", "d1-3b")
+FAST_MODEL = "d1-omni-600m"
 KEY_FILE = os.environ.get("LMSTUDIO_API_KEY_FILE", os.path.expanduser("~/.config/lmstudio/api_key"))
 
 VALID_ACTIONS = [
@@ -35,6 +37,26 @@ def _api_key():
         return "lm-studio"
 
 
+def _post_completion(payload):
+    proxy = os.environ.get("HTTPS_PROXY", "").replace("http://", "").replace("https://", "")
+    cmd = ["curl", "-s", f"{LM_URL}/v1/chat/completions",
+           "-H", "Content-Type: application/json",
+           "-H", f"Authorization: Bearer {_api_key()}",
+           "-d", json.dumps(payload)]
+    if proxy:
+        cmd[2:2] = ["--proxy", proxy]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    return json.loads(result.stdout)
+
+
+def _read_action(data):
+    raw = data["choices"][0]["message"]["content"].strip().lower()
+    for action in VALID_ACTIONS:
+        if action in raw:
+            return action, 0.8
+    return "wait", 0.3
+
+
 def decide(state_text, system_prompt="You are a WoW agent. Reply with ONLY the action name.", max_tokens=20):
     """Ask the LM Studio model to pick an action. Returns (action, confidence)."""
     payload = {
@@ -45,25 +67,16 @@ def decide(state_text, system_prompt="You are a WoW agent. Reply with ONLY the a
         ],
         "max_tokens": max_tokens,
     }
-    proxy = os.environ.get("HTTPS_PROXY", "").replace("http://", "").replace("https://", "")
-    cmd = ["curl", "-s", f"{LM_URL}/v1/chat/completions",
-           "-H", "Content-Type: application/json",
-           "-H", f"Authorization: Bearer {_api_key()}",
-           "-d", json.dumps(payload)]
-    if proxy:
-        cmd[2:2] = ["--proxy", proxy]
-
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        data = json.loads(result.stdout)
-        raw = data["choices"][0]["message"]["content"].strip().lower()
-        # Extract first valid action from response
-        for action in VALID_ACTIONS:
-            if action in raw:
-                return action, 0.8
-        return "wait", 0.3
+        return _read_action(_post_completion(payload))
     except Exception:
-        return "wait", 0.0
+        if payload["model"] == FAST_MODEL:
+            return "wait", 0.0
+        payload["model"] = FAST_MODEL
+        try:
+            return _read_action(_post_completion(payload))
+        except Exception:
+            return "wait", 0.0
 
 
 class LMStudioJudge:

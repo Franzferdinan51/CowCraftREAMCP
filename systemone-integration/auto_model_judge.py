@@ -2,8 +2,9 @@
 """
 auto_model_judge.py — Auto-detects what's loaded in LM Studio and uses it.
 
-Never triggers a new model load. Queries /v1/models to see what's available,
-prefers D1 for fast decisions, falls back to whatever's loaded.
+Never triggers a new model load. Queries /v1/models and calls only
+d1-3b, then d1-omni-600m when that id is already loaded. Other models
+are not called.
 
 Supports up to 4 parallel requests via thread pool (for swarm use).
 
@@ -12,7 +13,7 @@ This avoids RAM overload by never loading new models.
 Env vars:
     LMSTUDIO_URL — LM Studio base URL (default: http://100.68.208.113:1234)
     LMSTUDIO_API_KEY_FILE — path to API key (default: ~/.config/lmstudio/api_key)
-    PREFER_MODEL — preferred model ID substring (default: "d1")
+    PREFER_MODEL — ignored. Decisions use d1-3b, then d1-omni-600m.
     MAX_PARALLEL — max concurrent model requests (default: 4)
 """
 
@@ -25,7 +26,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 LM_URL = os.environ.get("LMSTUDIO_URL", "http://100.68.208.113:1234").rstrip("/")
 KEY_FILE = os.environ.get("LMSTUDIO_API_KEY_FILE", os.path.expanduser("~/.config/lmstudio/api_key"))
-PREFER = os.environ.get("PREFER_MODEL", "d1").lower()
+# Same pair as SystemOne's DEFAULT_DECISION_MODEL and DEFAULT_FAST_MODEL.
+DECISION_MODEL = "d1-3b"
+FAST_MODEL = "d1-omni-600m"
+DECISION_MODELS = (DECISION_MODEL, FAST_MODEL)
 MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "4"))
 
 VALID_ACTIONS = [
@@ -117,6 +121,36 @@ def _curl(args, timeout=15):
     return result.stdout
 
 
+def select_decision_model(loaded_models):
+    """Return d1-3b if that id is listed, else d1-omni-600m.
+
+    Any other loaded model is ignored. An empty list returns None.
+    """
+    found = []
+    for item in loaded_models or []:
+        if isinstance(item, str) and item.strip():
+            found.append(item.strip())
+    for wanted in DECISION_MODELS:
+        for mid in found:
+            if wanted in mid.lower():
+                return mid
+    return None
+
+
+def other_decision_model(chosen, loaded_models):
+    """The other D1 id, when it is loaded and different from chosen."""
+    chosen_l = (chosen or "").lower()
+    for wanted in DECISION_MODELS:
+        if wanted in chosen_l:
+            continue
+        alt = select_decision_model(
+            [mid for mid in (loaded_models or [])
+             if isinstance(mid, str) and wanted in mid.lower()])
+        if alt and alt.lower() != chosen_l:
+            return alt
+    return None
+
+
 def get_loaded_models():
     """Query LM Studio for currently loaded models. Never triggers a load."""
     try:
@@ -131,42 +165,21 @@ def get_loaded_models():
 
 
 def pick_model():
-    """Pick the best available model without loading anything new.
+    """Pick d1-3b, else d1-omni-600m, from models already loaded.
 
-    Priority:
-    1. Model matching PREFER (default: d1) — fast decisions
-    2. Any other loaded model
-    3. None (caller should use StubJudge fallback)
+    Does not load a model. Returns None when neither id is loaded.
     """
     global _cached_model
     with _model_lock:
         if _cached_model:
             return _cached_model
-
-        models = get_loaded_models()
-        if not models:
-            return None
-
-        # Prefer D1 or matching model
-        for m in models:
-            if PREFER in m.lower():
-                _cached_model = m
-                return m
-
-        # Fall back to first available
-        _cached_model = models[0]
-        return models[0]
+        chosen = select_decision_model(get_loaded_models())
+        if chosen:
+            _cached_model = chosen
+        return chosen
 
 
-def decide(state_text, system_prompt=None, max_tokens=20):
-    """Ask the auto-detected model to pick an action. Returns (action, confidence, model_used)."""
-    model = pick_model()
-    if not model:
-        return "wait", 0.0, None
-
-    if system_prompt is None:
-        system_prompt = "You are a WoW agent. Reply with ONLY the action name."
-
+def _ask_model(model, state_text, system_prompt, max_tokens):
     payload = {
         "model": model,
         "messages": [
@@ -175,22 +188,45 @@ def decide(state_text, system_prompt=None, max_tokens=20):
         ],
         "max_tokens": max_tokens,
     }
+    out = _curl([
+        f"{LM_URL}/v1/chat/completions",
+        "-H", "Content-Type: application/json",
+        "-H", f"Authorization: Bearer {_api_key()}",
+        "-d", json.dumps(payload),
+    ], timeout=60)
+    data = json.loads(out)
+    raw = data["choices"][0]["message"]["content"].strip().lower()
+    action, _log = choose_action([model], raw)
+    words = re.findall(r"[a-z0-9_]+", raw)
+    if action in words or raw.strip() == action:
+        return action, 0.8, model
+    return "wait", 0.3, model
+
+
+def decide(state_text, system_prompt=None, max_tokens=20):
+    """Ask d1-3b, then d1-omni-600m, to pick an action.
+
+    Returns (action, confidence, model_used). Neither call happens unless
+    that model id is already loaded. A failed call tries the other id once.
+    """
+    loaded = get_loaded_models()
+    model = select_decision_model(loaded)
+    if not model:
+        return "wait", 0.0, None
+
+    if system_prompt is None:
+        system_prompt = "You are a WoW agent. Reply with ONLY the action name."
+
     try:
-        out = _curl([
-            f"{LM_URL}/v1/chat/completions",
-            "-H", "Content-Type: application/json",
-            "-H", f"Authorization: Bearer {_api_key()}",
-            "-d", json.dumps(payload),
-        ], timeout=60)
-        data = json.loads(out)
-        raw = data["choices"][0]["message"]["content"].strip().lower()
-        action, _log = choose_action([model], raw)
-        words = re.findall(r"[a-z0-9_]+", raw)
-        if action in words or raw.strip() == action:
-            return action, 0.8, model
-        return "wait", 0.3, model
+        return _ask_model(model, state_text, system_prompt, max_tokens)
     except Exception:
-        return "wait", 0.0, model
+        alt = other_decision_model(model, loaded)
+        if not alt:
+            return "wait", 0.0, model
+        try:
+            return _ask_model(alt, state_text, system_prompt, max_tokens)
+        except Exception:
+            return "wait", 0.0, alt
 
 
 def decide_parallel(requests):

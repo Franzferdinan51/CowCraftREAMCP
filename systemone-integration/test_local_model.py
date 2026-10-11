@@ -6,7 +6,14 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from auto_model_judge import bounded_world_summary, choose_action  # noqa: E402
+from auto_model_judge import (  # noqa: E402
+    bounded_world_summary,
+    choose_action,
+    other_decision_model,
+    select_decision_model,
+)
+from judge import build_questions, choice_criteria, decision_models, decision_payload  # noqa: E402
+from cowcraft_env import ACTIONS  # noqa: E402
 
 
 class LocalModelTest(unittest.TestCase):
@@ -58,6 +65,28 @@ class LocalModelTest(unittest.TestCase):
         )
         self.assertLessEqual(len(huge), 600)
         print("LOCAL summary listed self, hostiles, and money inside 600 characters")
+
+    def test_only_d1_3b_then_d1_omni_are_decision_models(self):
+        loaded = ["mimo-v2.6", "d1-omni-600m", "d1-3b-q4"]
+        self.assertEqual(select_decision_model(loaded), "d1-3b-q4")
+        self.assertEqual(select_decision_model(["llama", "d1-omni-600m"]), "d1-omni-600m")
+        self.assertIsNone(select_decision_model(["mimo-v2.6"]))
+        self.assertIsNone(select_decision_model([]))
+        self.assertEqual(
+            other_decision_model("d1-3b-q4", loaded), "d1-omni-600m")
+        self.assertIsNone(other_decision_model("d1-3b", ["d1-3b"]))
+        self.assertEqual(decision_models(None), ("d1-3b", "d1-omni-600m"))
+        self.assertEqual(decision_models("d1-omni-600m"), ("d1-omni-600m",))
+        self.assertEqual(decision_models("mimo-v2.6"), ("d1-3b", "d1-omni-600m"))
+        payload = decision_payload("self hp=10", build_questions(ACTIONS)[0], "d1-3b")
+        self.assertEqual(payload["model"], "d1-3b")
+        self.assertEqual(payload["type"], "choice")
+        self.assertIn("attack", payload["criteria"])
+        self.assertNotIn("options", payload["criteria"])
+        for desc in payload["criteria"].values():
+            self.assertTrue(desc is None or isinstance(desc, str))
+        self.assertEqual(choice_criteria({"options": [{"name": "attack"}]}), {"attack": None})
+        print("LOCAL decision models are d1-3b then d1-omni-600m")
 
 
 if __name__ == "__main__":
